@@ -22,6 +22,7 @@ const icons = {
 const icon = name => `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.book}</svg>`;
 const statusName = {draft:'草稿', approved:'已确认', needs_review:'待复核'};
 const state = {project:null, canon:[], projects:[], fields:{}, settings:{}, view:'write', chapterId:null, editorTab:'text', sideTab:'memory', rewriteNotes:{}, dirty:false, busy:false};
+state.editVersion = 0;
 const current = () => state.project.chapters.find(c => c.id === state.chapterId) || state.project.chapters[0];
 const count = text => [...(text || '').replace(/\s/g, '')].length;
 const date = value => new Date(value).toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'});
@@ -30,7 +31,7 @@ async function api(path, body) {
   const options = body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)};
   let response;
   try { response = await fetch(path, options); }
-  catch { throw new Error('无法连接本地服务，请确认 app.py 仍在运行。未保存的文字仍保留在页面中。'); }
+  catch { throw new Error(navigator.userAgent.includes('NovelGeneratorAndroid/') ? '暂时无法连接应用内服务。请保留未保存的文字，稍后重试。' : '无法连接本地服务，请确认 app.py 仍在运行。未保存的文字仍保留在页面中。'); }
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || '操作失败，请重试。');
   return data;
@@ -46,6 +47,7 @@ function toast(message, error = false) {
 
 function markDirty() {
   state.dirty = true;
+  state.editVersion++;
   const label = $('#save-state');
   if (label) label.textContent = '有未保存修改';
 }
@@ -67,7 +69,7 @@ function setBusy(value, label = '正在保存…') {
 async function run(fn, label) {
   if (state.busy) return;
   setBusy(true, label);
-  try { await fn(); }
+  try { if(window.mobileSavePending) await window.mobileSavePending; await fn(); }
   catch (err) { toast(err.message, true); }
   finally { setBusy(false); }
 }
@@ -92,19 +94,24 @@ function captureEditor() {
   captureChapterOutline();
 }
 
-async function saveCurrent() {
-  if (!state.dirty) return;
+function currentSaveOperation() {
   if (state.view === 'write') {
     captureEditor();
     const c = current();
-    await mutate('save_chapter', Object.fromEntries(['id','title','intent','outline','text','summary','cast','changes','node_id','completes_node','node_evidence'].map(k => [k, c[k]])));
+    return ['save_chapter', Object.fromEntries(['id','title','intent','outline','text','summary','cast','changes','node_id','completes_node','node_evidence'].map(k => [k, c[k]]))];
   } else if (state.view === 'outline') {
-    await mutate('save_book_outline', collectBookOutline());
+    return ['save_book_outline', collectBookOutline()];
   } else if (state.view === 'story') {
     const data = {title:$('#story-title').value, brief:{}, style:{}};
     for (const node of $$('[data-section]')) data[node.dataset.section][node.name] = node.value;
-    await mutate('save_story', data);
+    return ['save_story', data];
   }
+}
+
+async function saveCurrent() {
+  if (!state.dirty) return;
+  const operation = currentSaveOperation();
+  if(operation) await mutate(...operation);
 }
 
 function canonicalBefore() {
@@ -141,6 +148,7 @@ function render() {
   $('#app').innerHTML = `${sidebar()}<main class="main"><header class="topbar"><div class="breadcrumb">我的书桌<span>/</span>${esc(p.title)}${p.is_demo?'<b class="badge draft">示例作品</b>':''}<span>/</span><strong>${titles[state.view]}</strong></div><div class="topbar-actions"><span class="save-state" id="save-state">${state.dirty ? '有未保存修改' : '已保存到本地'}</span><button class="button subtle small" data-action="export">${icon('download')}导出作品</button></div></header><div class="page">${({write:renderWrite, outline:renderBookOutline, characters:renderCharacters, world:renderWorld, story:renderStory, references:renderReferences, settings:renderSettings}[state.view])()}</div><footer class="footer"><span>叙事工坊 · 作者掌舵，灵感同行</span><span>本地存储 · ${p.chapters.filter(c=>c.status==='approved').length} 章已确认</span></footer></main>`;
   decorateReferenceEntries();
   decorateOutlineEntries();
+  window.decorateMobile?.();
   if ($('#rewrite-instructions')) $('#rewrite-instructions').value = state.rewriteNotes[current().id] || '';
 }
 

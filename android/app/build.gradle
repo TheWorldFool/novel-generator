@@ -1,0 +1,69 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+
+def pythonSources = layout.buildDirectory.dir('generated/python')
+def webAssets = layout.buildDirectory.dir('generated/assets')
+tasks.register('syncPython', Sync) {
+    from('../..') { include 'app.py', 'novel.py', 'outline.py' }
+    from('src/main/python')
+    into(pythonSources)
+}
+tasks.register('syncWebAssets', Sync) {
+    from('../../static')
+    into(webAssets.map { it.dir('web') })
+}
+
+android {
+    namespace 'io.github.theworldfool.novelgenerator'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'io.github.theworldfool.novelgenerator'
+        minSdk 24
+        targetSdk 35
+        versionCode 2
+        versionName '0.2.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        ndk { abiFilters 'arm64-v8a', 'x86_64' }
+    }
+    signingConfigs {
+        if (System.getenv('NOVEL_SIGNING_STORE')) {
+            release {
+                storeFile file(System.getenv('NOVEL_SIGNING_STORE'))
+                storePassword System.getenv('NOVEL_SIGNING_PASSWORD')
+                keyAlias 'novel-generator'
+                keyPassword System.getenv('NOVEL_SIGNING_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+        }
+        release {
+            minifyEnabled false
+            if (System.getenv('NOVEL_SIGNING_STORE')) signingConfig signingConfigs.release
+        }
+    }
+    sourceSets {
+        main { assets.srcDir webAssets }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+chaquopy {
+    defaultConfig { version '3.13' }
+    sourceSets { main { srcDirs = [pythonSources.get().asFile] } }
+}
+tasks.configureEach {
+    if (name == 'preBuild' || name.endsWith('PythonSources')) dependsOn 'syncPython', 'syncWebAssets'
+}
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+dependencies {
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+}

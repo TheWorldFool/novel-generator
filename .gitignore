@@ -4,3 +4,12 @@ data/
 .env
 .venv/
 test-results/
+.env.*
+android/.gradle/
+android/**/build/
+android/local.properties
+*.jks
+*.keystore
+*.apk
+*.aab
+dist/

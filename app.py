@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
+import secrets
+from http.cookies import SimpleCookie, CookieError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 from urllib.request import Request
@@ -229,9 +231,11 @@ def prepare_image(data):
 class AppServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, store):
+    def __init__(self, address, store, *, session_token=None, static_root=None):
         super().__init__(address, Handler)
         self.store = store
+        self.session_token = session_token
+        self.static_root = Path(static_root) if static_root else ROOT / "static"
         self.api_key = os.getenv("NOVEL_API_KEY", "")
         self.settings_lock = threading.Lock()
 
@@ -271,6 +275,15 @@ class Handler(BaseHTTPRequestHandler):
         if (origin and origin != f"http://{host}") or self.headers.get("Sec-Fetch-Site") == "cross-site":
             self.respond({"error": "不允许跨站请求。"}, 403)
             return False
+        if self.server.session_token:
+            try:
+                cookie = SimpleCookie(self.headers.get("Cookie", ""))
+                supplied = cookie["novel_session"].value if "novel_session" in cookie else ""
+            except CookieError:
+                supplied = ""
+            if not secrets.compare_digest(supplied.encode("utf-8"), self.server.session_token.encode("utf-8")):
+                self.respond({"error": "应用会话已失效，请重新打开应用。"}, 403)
+                return False
         return True
 
     def do_GET(self):
@@ -302,9 +315,11 @@ class Handler(BaseHTTPRequestHandler):
             files["/references.css"] = ("references.css", "text/css; charset=utf-8")
             files["/outline.js"] = ("outline.js", "text/javascript; charset=utf-8")
             files["/outline.css"] = ("outline.css", "text/css; charset=utf-8")
+            files["/mobile.css"] = ("mobile.css", "text/css; charset=utf-8")
+            files["/mobile.js"] = ("mobile.js", "text/javascript; charset=utf-8")
             if path in files:
                 file, mime = files[path]
-                return self.respond((ROOT / "static" / file).read_bytes(), content_type=mime)
+                return self.respond((self.server.static_root / file).read_bytes(), content_type=mime)
             self.respond({"error": "页面不存在。"}, 404)
         except novel.StoryError as exc:
             self.respond({"error": str(exc)}, 404)
