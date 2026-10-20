@@ -1,0 +1,19 @@
+.local-edit-toolbar{padding:12px 28px 15px;border-bottom:1px solid var(--line,#e6e7e1);background:#f8faf6;display:flex;flex-direction:column;gap:8px}
+.local-edit-buttons{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.local-edit-toolbar small{font-size:12px;color:var(--muted,#747e75);line-height:1.5}
+.local-edit-form{max-width:100%;min-width:0}
+.local-edit-original{margin:18px 0;border:1px solid var(--line,#e6e7e1);border-radius:10px;overflow:hidden}
+.local-edit-original summary{padding:12px 15px;cursor:pointer;font-weight:600;font-size:13px;background:#f6f7f2}
+.local-edit-original pre,.local-edit-alternative pre{font-family:inherit;font-size:14px;line-height:1.9;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:14px 15px;max-height:230px;overflow-y:auto;color:var(--text,#334137)}
+.local-edit-form textarea{font-family:inherit;line-height:1.85;white-space:pre-wrap}
+.local-edit-form #local-edit-replacement{min-height:190px}
+.local-edit-chips{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 16px}
+.local-edit-chips .check-chip{font-family:inherit;font-size:12px;cursor:pointer;background:#f7f8f3;padding:7px 10px;min-height:36px}
+.local-edit-alternative{margin:0 0 18px;padding:14px;border:1px solid #c8d8c8;border-radius:10px;background:#f5faf2}
+.local-edit-alternative h3{font-size:14px;margin:0 0 5px}
+.local-edit-alternative pre{padding:8px 0 14px;max-height:210px}
+.local-edit-actions{flex-wrap:wrap}
+.local-edit-actions button{white-space:normal;min-height:42px}
+.local-edit-notice{line-height:1.7}
+.local-edit-pending{font-size:12px;line-height:1.7;color:#8a713a}.local-edit-pending .text-button{margin-left:5px}
+@media(max-width:700px){.local-edit-toolbar{padding:12px 16px}.local-edit-buttons{gap:7px}.local-edit-buttons .button{flex:1;min-width:145px;justify-content:center}.local-edit-buttons .text-button{min-height:36px}.local-edit-actions{display:grid;grid-template-columns:1fr;gap:9px}.local-edit-actions .button{width:100%;justify-content:center}.local-edit-actions .subtle{order:3}.local-edit-original pre{max-height:180px}.local-edit-form #local-edit-replacement{min-height:180px}}

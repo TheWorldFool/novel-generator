@@ -1,5 +1,6 @@
 """Story domain: explicit approval, evidence, ordered canon, and revision history."""
 import copy
+import hashlib
 import datetime as dt
 import uuid
 import outline as story_outline
@@ -34,6 +35,8 @@ def upgrade(p):
         if entity["kind"] == "character":
             entity["base"].setdefault("appearance", "")
     story_outline.ensure(p)
+    for c in p["chapters"]:
+        c.setdefault("local_edit_review_required", False)
     return p
 
 
@@ -41,7 +44,7 @@ def chapter(title="新的章节"):
     return {"id": uid(), "title": title, "intent": "", "outline": "", "text": "", "summary": "",
             "node_id": "", "completes_node": False, "node_evidence": "", "outline_checked_version": 0,
             "cast": [], "status": "draft", "accepted_text": "", "accepted_summary": "", "changes": [],
-            "review": None, "versions": [], "updated_at": now()}
+            "review": None, "versions": [], "local_edit_review_required": False, "updated_at": now()}
 
 
 def new_project(title="未命名小说"):
@@ -152,7 +155,7 @@ def validate_changes(p, c):
     return selected
 
 
-def approve(p, cid, outline_checked=False):
+def approve(p, cid, outline_checked=False, local_edit_checked=False):
     c = get_chapter(p, cid)
     for previous in p["chapters"]:
         if previous["id"] == cid:
@@ -163,12 +166,14 @@ def approve(p, cid, outline_checked=False):
         raise StoryError("请先写入正文。")
     if not c["summary"].strip():
         raise StoryError("请先填写章节摘要，供后续章节检索。")
+    if c.get("local_edit_review_required") and not local_edit_checked:
+        raise StoryError("局部微调后，请先核对章节摘要与状态变化，再勾选确认。")
     story_outline.validate_approval(p, c, outline_checked)
     selected = validate_changes(p, c)
     changed = c.get("accepted_text") != c["text"] or c.get("accepted_changes", []) != selected or c.get("accepted_summary") != c["summary"]
     affected = invalidate(p, cid) if changed else []
     snapshot(c, "作者确认正文")
-    c.update(status="approved", accepted_text=c["text"], accepted_summary=c["summary"], accepted_changes=selected, updated_at=now())
+    c.update(status="approved", accepted_text=c["text"], accepted_summary=c["summary"], accepted_changes=selected, local_edit_review_required=False, updated_at=now())
     log(p, f"已确认《{c['title']}》，入库 {len(selected)} 项变化。" + (f"后续 {len(affected)} 章待复核。" if affected else ""))
 
 
@@ -255,7 +260,9 @@ def mutate(p, action, data):
             log(p, f"正文或状态变化已修改，{len(affected)} 章等待复核。")
         c.update(updates, **mapping, changes=changes, cast=cast, updated_at=now())
     elif action == "approve":
-        approve(p, data.get("id"), data.get("outline_checked") is True)
+        approve(p, data.get("id"), data.get("outline_checked") is True, data.get("local_edit_checked") is True)
+    elif action == "apply_local_edit":
+        apply_local_edit(p, data)
     elif action == "restore":
         c = get_chapter(p, data.get("id"))
         version = next((v for v in c["versions"] if v["id"] == data.get("version_id")), None)
@@ -498,6 +505,71 @@ def save_reference_analysis(p, rid, result, feedback=None):
             ref["analysis_history"] = history[-10:]
     ref["analysis"] = analysis
     log(p, f"「{ref['title']}」{'按反馈修正' if feedback is not None else '分析'}完成，等待作者选择采用。")
+
+
+def _utf16_index(text, offset):
+    if type(offset) is not int or offset < 0:
+        raise StoryError("选区位置无效，请重新选择正文。")
+    units = 0
+    for index, ch in enumerate(text):
+        if units == offset:
+            return index
+        units += 2 if ord(ch) > 0xFFFF else 1
+        if units > offset:
+            raise StoryError("选区不能截断一个完整字符，请重新选择正文。")
+    if units == offset:
+        return len(text)
+    raise StoryError("选区超出当前正文，请重新选择。")
+
+
+def _text_hash(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def edit_selection(p, c, data):
+    start, end = data.get("start"), data.get("end")
+    a, b = _utf16_index(c["text"], start), _utf16_index(c["text"], end)
+    if b <= a:
+        raise StoryError("请先选中要微调的一句话或一段正文。")
+    original = c["text"][a:b]
+    expected = bounded_string(data.get("selected_text", data.get("original", "")), 20000)
+    if not original.strip() or len(original) > 20000 or original != expected:
+        raise StoryError("选中文字与当前正文不一致，或选区超过20000字符，请重新选择。")
+    return {"chapter_id": c["id"], "start": start, "end": end, "original": original,
+            "source_hash": _text_hash(c["text"]), "source_revision": p["revision"]}
+
+
+def edit_preview(p, c, data, result):
+    selection = edit_selection(p, c, data)
+    if not isinstance(result, dict) or "replacement" not in result:
+        raise StoryError("模型没有返回有效的局部修改建议，原文已保留。")
+    replacement = bounded_string(result["replacement"], 30000)
+    if len(c["text"]) - len(selection["original"]) + len(replacement) > 100000:
+        raise StoryError("替换后章节将超过10万字符，请缩短修改建议。")
+    return {**selection, "replacement": replacement}
+
+
+def apply_local_edit(p, data):
+    c = get_chapter(p, data.get("chapter_id"))
+    if type(data.get("source_revision")) is not int or data["source_revision"] != p["revision"]:
+        raise StoryError("作品已更新，这份微调预览已过期。请保留修改建议，再重新选择正文。")
+    source_hash = bounded_string(data.get("source_hash", ""), 64)
+    if source_hash != _text_hash(c["text"]):
+        raise StoryError("正文已经改变，不能覆盖旧选区。请重新选择需要修改的文字。")
+    preview = edit_preview(p, c, data, {"replacement": data.get("replacement")})
+    if preview["replacement"] == preview["original"]:
+        return
+    a, b = _utf16_index(c["text"], preview["start"]), _utf16_index(c["text"], preview["end"])
+    updated = c["text"][:a] + preview["replacement"] + c["text"][b:]
+    snapshot(c, "局部微调前的版本")
+    invalidate(p, c["id"], True)
+    changes = [{**copy.deepcopy(item), "selected": False} for item in c["changes"]
+               if item.get("evidence", "").strip() and item["evidence"] in updated]
+    c.update(text=updated, review=None, changes=changes, local_edit_review_required=True,
+             outline_checked_version=0, updated_at=now())
+    if c["node_evidence"] and c["node_evidence"] not in updated:
+        c["node_evidence"] = ""
+    log(p, f"《{c['title']}》已采用局部微调，选区外文字保持原样；请核对摘要与状态变化。")
 
 
 def apply_ai(p, cid, action, result):

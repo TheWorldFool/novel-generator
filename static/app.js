@@ -149,6 +149,7 @@ function render() {
   decorateReferenceEntries();
   decorateOutlineEntries();
   window.decorateMobile?.();
+  window.decorateLocalEdit?.();
   if ($('#rewrite-instructions')) $('#rewrite-instructions').value = state.rewriteNotes[current().id] || '';
 }
 
@@ -263,7 +264,7 @@ document.addEventListener('click', event => {
   const button = event.target.closest('[data-action]');
   if (!button || state.busy) return;
   const {action, id, view, tab, task, kind} = button.dataset;
-  if (action.startsWith('ref-') || action.startsWith('out-')) return;
+  if (action.startsWith('ref-') || action.startsWith('out-') || action.startsWith('edit-')) return;
   if (action==='close-dialog') { $('#dialog').close(); return; }
   if (action==='editor-tab') {
     captureEditor(); state.editorTab=tab; render(); return;
@@ -284,7 +285,7 @@ document.addEventListener('click', event => {
   if (action==='approve') {
     captureEditor();
     const c=current();
-    showDialog(`<div class="eyebrow green">AUTHOR'S APPROVAL</div><h2>把这一章写进正式记忆。</h2><p>《${esc(c.title)}》 · ${count(c.text)} 字</p><div class="note-card"><strong>章节摘要</strong><p>${esc(c.summary||'尚未填写摘要，请先在「章节记忆」中补充。')}</p></div><p>本次将写入 <strong>${c.changes.filter(x=>x.selected).length}</strong> 项勾选的状态变化。未勾选的建议不会生效。</p><p class="help">如果前文仍有未确认章节，请先完成前文。修改已确认内容会使后续章节进入待复核。</p><div class="dialog-actions"><button class="button subtle" data-action="close-dialog">继续检查</button><button class="button primary" data-action="confirm-approve">确认入库</button></div>`); decorateOutlineApproval(); return;
+    showDialog(`<div class="eyebrow green">AUTHOR'S APPROVAL</div><h2>把这一章写进正式记忆。</h2><p>《${esc(c.title)}》 · ${count(c.text)} 字</p><div class="note-card"><strong>章节摘要</strong><p>${esc(c.summary||'尚未填写摘要，请先在「章节记忆」中补充。')}</p></div><p>本次将写入 <strong>${c.changes.filter(x=>x.selected).length}</strong> 项勾选的状态变化。未勾选的建议不会生效。</p>${c.local_edit_review_required?'<label class="check-line"><input type="checkbox" id="approve-local-edit-checked">我已核对局部微调后的章节摘要，并重新检查需要记录的状态变化。</label>':''}<p class="help">如果前文仍有未确认章节，请先完成前文。修改已确认内容会使后续章节进入待复核。</p><div class="dialog-actions"><button class="button subtle" data-action="close-dialog">继续检查</button><button class="button primary" data-action="confirm-approve">确认入库</button></div>`); decorateOutlineApproval(); return;
   }
   const instructions = action==='rewrite' ? ($('#rewrite-instructions')?.value || '') : '';
   if (action==='rewrite' && !instructions.trim() && !current().review) { toast('请填写修订意见，或先完成一次审稿。',true); return; }
@@ -303,8 +304,10 @@ document.addEventListener('click', event => {
       await saveCurrent(); await mutate('add_chapter',{}); state.chapterId=state.project.chapters.at(-1).id; state.view='write'; state.editorTab='outline'; render();
     } else if (action==='confirm-approve') {
       const outlineChecked = $('#approve-outline-checked')?.checked === true;
+      const localEditChecked = $('#approve-local-edit-checked')?.checked === true;
       if (state.project.book_outline.active && !outlineChecked) throw new Error('请先勾选已核对本章与全书大纲一致。');
-      await saveCurrent(); await mutate('approve',{id:current().id,outline_checked:outlineChecked}); $('#dialog').close(); render(); toast('正文已确认，选中的状态变化已进入正式记忆。');
+      if(current().local_edit_review_required && !localEditChecked) throw new Error('请先核对局部微调后的摘要和状态变化，并勾选确认。');
+      await saveCurrent(); await mutate('approve',{id:current().id,outline_checked:outlineChecked,local_edit_checked:localEditChecked}); $('#dialog').close(); render(); toast('正文已确认，选中的状态变化已进入正式记忆。');
     } else if (action==='preflight') {
       await saveCurrent(); await mutate('preflight',{id:current().id}); state.sideTab='review'; render();
     } else if (action==='ai' || action==='rewrite' || action==='redraft') {
@@ -341,7 +344,7 @@ document.addEventListener('change', event => {
 });
 
 document.addEventListener('submit', event => {
-  if (event.target.id.includes('reference-form') || event.target.id==='outline-node-form') return;
+  if (event.target.id.includes('reference-form') || event.target.id==='outline-node-form' || event.target.id==='local-edit-form') return;
   event.preventDefault();
   const form=event.target;
   const data=Object.fromEntries(new FormData(form));
