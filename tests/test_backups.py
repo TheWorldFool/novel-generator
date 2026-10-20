@@ -12,6 +12,7 @@ from urllib.error import HTTPError
 import app
 import backups
 import novel
+import proposals
 import test_workbench as support
 from test_references import PNG, character_result, style_result
 
@@ -193,6 +194,21 @@ class BackupStoreTests(unittest.TestCase):
                 c.pop(key, None)
         backup["images"] = []
         self.assertEqual(self.store.restore_backup(backup)["chapters"][0]["text"], p["chapters"][0]["text"])
+
+    def test_outline_draft_history_round_trip_and_malformed_history_is_rejected(self):
+        backup = copy.deepcopy(self.backup)
+        p = backup["project"]
+        p["book_outline"]["draft"] = {"text": "他找到线索后返回。", "ending": "返回", "guardrails": "不离开小镇", "nodes": []}
+        result = {"nodes": [{"title": "调查", "goal": "找到线索", "must": "", "avoid": "", "source_quote": "他找到线索"}]}
+        preview = proposals.outline_preview(p, result)
+        proposals.adopt_outline(p, {**preview, "mode": "replace"})
+        restored = self.store.restore_backup(backup)
+        self.assertEqual(restored["book_outline"]["draft_history"], p["book_outline"]["draft_history"])
+        for field in ("id", "at", "reason", "draft"):
+            bad = copy.deepcopy(backup)
+            bad["project"]["book_outline"]["draft_history"][0].pop(field)
+            with self.subTest(field=field), self.assertRaises(novel.StoryError):
+                self.store.restore_backup(bad)
 
 
 class BackupHTTPTests(unittest.TestCase):

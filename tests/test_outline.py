@@ -60,11 +60,14 @@ class OutlineDomainTests(unittest.TestCase):
         draft=draft_outline();draft["nodes"]=[];draft["ending"]=""
         novel.mutate(self.p,"save_book_outline",draft)
         result={"text":"模型不能改写这份原文", "ending":"", "nodes":draft_outline()["nodes"]}
-        story_outline.save_proposal(self.p,result)
+        before=copy.deepcopy(self.p)
+        proposal=story_outline.save_proposal(self.p,result)
         self.assertEqual(self.p["book_outline"]["draft"]["text"],draft["text"])
         self.assertEqual(self.p["book_outline"]["draft"]["ending"],"")
         self.assertIsNone(self.p["book_outline"]["active"])
-        self.assertNotEqual(self.p["book_outline"]["draft"]["nodes"][0]["id"],"investigation")
+        self.assertEqual(self.p,before)
+        self.assertNotEqual(proposal["draft"]["nodes"][0]["id"],"investigation")
+        self.assertEqual(proposal["draft"]["text"],draft["text"])
 
     def test_publishing_invalidates_approved_chapters_and_keeps_history(self):
         activate(self.p)
@@ -167,11 +170,10 @@ class OutlineHTTPTests(unittest.TestCase):
         self.server.store.update(self.pid,p["revision"],lambda x:novel.mutate(x,"save_book_outline",draft_outline()))
         p=self.server.store.get(self.pid)
         _,raw=self.request(f"/api/projects/{self.pid}/outline-ai",{"revision":p["revision"]})
-        after=json.loads(raw)["project"]
-        self.assertIsNone(after["book_outline"]["active"])
-        self.assertEqual(after["book_outline"]["draft"]["text"],draft_outline()["text"])
-        self.assertEqual(len(after["book_outline"]["draft"]["nodes"]),2)
-        self.assertEqual(after["chapters"],p["chapters"])
+        proposal=json.loads(raw)["proposal"]
+        self.assertEqual(self.server.store.get(self.pid),p)
+        self.assertEqual(proposal["draft"]["text"],draft_outline()["text"])
+        self.assertEqual(len(proposal["draft"]["nodes"]),2)
 
     def test_writing_request_carries_author_outline_and_bound_node(self):
         self.setup_provider();self.enable_outline()

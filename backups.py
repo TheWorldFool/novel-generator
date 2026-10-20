@@ -239,6 +239,12 @@ def validate_project(p):
             fail()
         text(entry.get("at"), 100)
         direction(entry.get("outline"), active=True)
+    draft_history = items(book.get("draft_history", []), 20)
+    unique(draft_history)
+    for entry in draft_history:
+        text(entry.get("at"), 100)
+        text(entry.get("reason"), 10000)
+        direction(entry.get("draft"))
     for chapter in chapters:
         mapping(chapter)
     refs = items(p["references"], 40)

@@ -4,10 +4,40 @@
 // The server validates the complete source before it applies a replacement.
 (() => {
   const drafts = new Map();
+  const loaded = new Map();
   let remembered = null;
   let sequence = 0;
   const keyFor = () => state.project ? `${state.project.id}:${current().id}` : '';
   const editor = () => $('#chapter-text');
+  const storageKey = chapterId => `local-edit:${chapterId}`;
+
+  function persist(draft) {
+    if (!window.workDrafts) return Promise.resolve();
+    return window.workDrafts.write(storageKey(draft.chapterId),{...draft},draft.projectId).then(()=>{
+      draft.storageFailed = false;
+    }).catch(error=>{
+      if (!draft.storageFailed) toast('微调草稿暂未保存到本机，请保持页面打开并稍后重试。你的输入仍保留在当前页面。',true);
+      draft.storageFailed = true;
+    });
+  }
+
+  function loadDraft(projectId, chapterId) {
+    const key = `${projectId}:${chapterId}`;
+    if (!window.workDrafts || loaded.has(key)) return loaded.get(key) || Promise.resolve();
+    const pending = window.workDrafts.read(storageKey(chapterId),projectId).then(saved=>{
+      if (!saved || drafts.has(key) || saved.projectId !== projectId || saved.chapterId !== chapterId ||
+          typeof saved.sourceText !== 'string' || typeof saved.original !== 'string' ||
+          !Number.isInteger(saved.start) || !Number.isInteger(saved.end) || saved.start < 0 ||
+          saved.end <= saved.start || saved.sourceText.slice(saved.start,saved.end) !== saved.original) return;
+      drafts.set(key,{...saved,key,session:String(++sequence),instructions:String(saved.instructions || ''),edit:saved.edit || null,
+        notice:'已恢复上次未采用的微调草稿。请核对原文和建议后再继续。'});
+    }).catch(()=>{
+      loaded.delete(key);
+      toast('暂时无法读取上次微调草稿，请稍后重试。',true);
+    });
+    loaded.set(key,pending);
+    return pending;
+  }
 
   function rememberSelection(clearCollapsed = false) {
     const input = editor();
@@ -31,24 +61,27 @@
     const replacement = $('#local-edit-replacement',form);
     if (instructions) draft.instructions = instructions.value;
     if (replacement) draft.replacement = replacement.value;
+    persist(draft);
   }
 
   function showDraft(draft) {
     const generated = draft.edit !== null;
     const stale = !draft.applied && (state.project.id !== draft.projectId || current().id !== draft.chapterId ||
       (editor()?.value ?? current().text) !== draft.sourceText);
+    const staleRevision = generated && state.project.revision !== draft.edit.source_revision;
     showDialog(`<form id="local-edit-form" data-session="${draft.session}" class="local-edit-form">
       <div class="eyebrow green">REFINE A PASSAGE</div><h2>只微调这一段文字</h2>
       <p class="help">先预览，再采用。选区之外的正文会保持原样；可以直接修改建议，也可以继续指出细节。</p>
       ${draft.notice?`<div class="notice local-edit-notice" role="status">${esc(draft.notice)}</div>`:''}
       ${stale?'<div class="notice amber">正文已变化，请关闭后重新选择要微调的文字。这里的意见和建议仍保留，尚未替换正文。</div>':''}
+      ${!stale && staleRevision?'<div class="notice amber">作品已经更新，这份建议不能直接采用。意见与手改内容已保留，请重新生成预览后再采用。</div>':''}
       <details class="local-edit-original" open><summary>选中的原文 · ${[...draft.original].length} 字符</summary><pre>${esc(draft.original)}</pre></details>
       ${generated || draft.replacement !== undefined?`<label class="field">修改建议 · 可直接编辑<textarea id="local-edit-replacement" rows="7" maxlength="30000" aria-label="修改建议">${esc(draft.replacement ?? '')}</textarea><small>采用时只替换上面的原文。清空建议会删除这段选区。</small></label>`:''}
       ${draft.alternative!==undefined?`<section class="local-edit-alternative"><h3>等待期间新生成的一版</h3><p class="help">你继续编辑的建议已保留在上方。可先比较，再选择使用这一版。</p><pre>${esc(draft.alternative)}</pre><button type="button" class="button outline small" data-action="local-edit-use-alternative">将这一版放入修改建议</button></section>`:''}
       <label class="field">${generated?'继续微调什么？':'需要修改哪些细节？'}<textarea id="local-edit-instructions" rows="3" maxlength="5000" placeholder="例如：把她的语气改得克制一些，保留动作、情节和其他对白。">${esc(draft.instructions)}</textarea></label>
       <div class="local-edit-chips" aria-label="常用微调要求">${['表达更自然，保留原意','减少解释，用动作表现','对白更符合人物性格','精简重复描写'].map(text=>`<button type="button" class="check-chip" data-action="local-edit-chip" data-value="${esc(text)}">${esc(text)}</button>`).join('')}</div>
       <p class="help">模型会参考当前人物、文风和全书大纲。采用后请核对章节记忆与状态变化。</p>
-      <div class="dialog-actions local-edit-actions"><button type="button" class="button subtle" data-action="local-edit-cancel">${draft.applied?'关闭':generated?'保留原文并关闭':'取消'}</button><button type="submit" class="button ${generated?'outline':'primary'}" ${stale || draft.applied?'disabled':''}>${generated?'按意见再生成一版':'生成微调预览'}</button>${generated?`<button type="button" class="button primary" data-action="local-edit-apply" ${stale || draft.applied?'disabled':''}>采用建议，仅替换选区</button>`:''}</div>
+      <div class="dialog-actions local-edit-actions"><button type="button" class="button subtle" data-action="local-edit-cancel">${draft.applied?'关闭':generated?'保留原文并关闭':'取消'}</button><button type="submit" class="button ${generated?'outline':'primary'}" ${stale || draft.applied?'disabled':''}>${generated?'按意见再生成一版':'生成微调预览'}</button>${generated?`<button type="button" class="button primary" data-action="local-edit-apply" ${stale || staleRevision || draft.applied?'disabled':''}>采用建议，仅替换选区</button>`:''}</div>
     </form>`);
   }
 
@@ -81,6 +114,7 @@
       drafts.set(key,draft);
     }
     showDraft(draft);
+    persist(draft);
     $('#local-edit-instructions')?.focus();
   }
 
@@ -119,6 +153,7 @@
       draft.notice = '';
     }
     if (draft.instructions === rawInstructions) draft.instructions = '';
+    await persist(draft);
     const visible = activeForm(draft) && $('#dialog')?.open;
     if (visible) showDraft(draft);
     else toast('微调预览已准备好，点击“继续上次微调”查看。');
@@ -142,18 +177,32 @@
       data:{...draft.edit,replacement}});
     captureDraft(draft);
     const hasNewInput = draft.instructions !== sentInstructions || draft.replacement !== replacement;
-    const wasVisible = activeForm(draft) && $('#dialog')?.open;
+    if (state.project.id !== draft.projectId) {
+      draft.applied = true;
+      draft.notice = '这次微调已保存到原作品。等待期间的输入保留在这里，请回到原作品核对正文。';
+      await persist(draft);
+      toast('微调已保存到原作品。');
+      return;
+    }
     accept(result);
     remembered = null;
     if (hasNewInput) {
       draft.applied = true;
       draft.notice = '已采用点击时的建议。等待期间继续输入的意见和文字保留在这里，可以复制；再次修改请关闭后重新选择正文。';
+      await persist(draft);
+      const wasVisible = activeForm(draft) && $('#dialog')?.open;
       render();
       if (wasVisible) showDraft(draft);
     } else {
       drafts.delete(`${draft.projectId}:${draft.chapterId}`);
-      $('#dialog').close();
+      updateResume();
+      // The formal save succeeded. Close before auxiliary cleanup so an input
+      // arriving during that cleanup cannot be silently discarded.
+      if (activeForm(draft) && $('#dialog')?.open) $('#dialog').close();
       render();
+      if (window.workDrafts) await window.workDrafts.remove(storageKey(draft.chapterId),draft.projectId).catch(()=>{
+        toast('正文已采用，但旧微调草稿暂未清理。再次打开时请核对正文。',true);
+      });
     }
     toast(replacement === draft.original?'建议与原文相同，正文没有改动。':'已只替换选区并保存原稿版本。请核对章节记忆与状态变化后重新确认正文。');
   }
@@ -168,6 +217,10 @@
       (current().local_edit_review_required?'<div class="local-edit-pending">正文已修改，请复核摘要并重新勾选有效状态变化。<button type="button" class="text-button" data-action="editor-tab" data-tab="summary">核对章节记忆 →</button></div>':'');
     input.before(bar);
     updateResume();
+    const projectId=state.project.id, chapterId=current().id;
+    loadDraft(projectId,chapterId).then(()=>{
+      if (state.project?.id === projectId && current()?.id === chapterId) updateResume();
+    });
   };
 
   for (const type of ['select','keyup','pointerup','focusout']) document.addEventListener(type,event=>{
@@ -184,13 +237,31 @@
       if (draft) captureDraft(draft);
     }
   });
+  // Android back, Escape and the shared close button can close the dialog
+  // without sending another input event (for example after an IME commit).
+  for (const type of ['cancel','close']) document.addEventListener(type,()=>{
+    const draft=getDraft();
+    if(draft)captureDraft(draft);
+  },true);
+  document.addEventListener('click',event=>{
+    if(event.target.closest('[data-action]')?.dataset.action==='close-dialog'){
+      const draft=getDraft();if(draft)captureDraft(draft);
+    }
+  },true);
   document.addEventListener('click',event=>{
     const button = event.target.closest('[data-action]');
     if (!button || !button.dataset.action.startsWith('local-edit-')) return;
     event.preventDefault();
     const action = button.dataset.action;
     if (state.busy) return;
-    if (action === 'local-edit-selection' || action === 'local-edit-paragraph') { openSelection(action === 'local-edit-paragraph'); return; }
+    if (action === 'local-edit-selection' || action === 'local-edit-paragraph') {
+      const projectId=state.project.id, chapterId=current().id, key=keyFor();
+      // Wait for saved work before deciding whether this selection is a new draft.
+      if (window.workDrafts) {
+        run(async()=>{await loadDraft(projectId,chapterId);if(state.project.id===projectId && current().id===chapterId)openSelection(action === 'local-edit-paragraph');});
+      } else openSelection(action === 'local-edit-paragraph');
+      return;
+    }
     const draft = drafts.get(keyFor());
     if (!draft) return;
     captureDraft(draft);
@@ -200,10 +271,12 @@
       draft.instructions = draft.instructions.trim() ? `${draft.instructions.trim()}；${button.dataset.value}` : button.dataset.value;
       $('#local-edit-instructions').value = draft.instructions;
       $('#local-edit-instructions').focus();
+      persist(draft);
     } else if (action === 'local-edit-use-alternative') {
       draft.replacement = draft.alternative;
       delete draft.alternative;
       draft.notice = '';
+      persist(draft);
       showDraft(draft);
     } else if (action === 'local-edit-apply') {
       const replacement = draft.replacement ?? '';

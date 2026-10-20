@@ -19,6 +19,8 @@ from urllib.error import HTTPError, URLError
 import novel
 import outline as story_outline
 import backups
+import drafts as draft_store
+import proposals
 
 ROOT = Path(__file__).resolve().parent
 
@@ -36,6 +38,7 @@ class Store:
             db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, data TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS reference_images (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS backup_imports (key TEXT PRIMARY KEY, digest TEXT NOT NULL, project_id TEXT NOT NULL)")
+            draft_store.init(db)
             if not db.execute("SELECT 1 FROM projects LIMIT 1").fetchone():
                 self.insert(novel.demo_project(), db)
 
@@ -84,6 +87,19 @@ class Store:
             p.update(revision=expected + 1, updated_at=novel.now())
             db.execute("UPDATE projects SET revision = ?, data = ? WHERE id = ?", (p["revision"], json.dumps(p, ensure_ascii=False), pid))
         return p
+
+    def draft(self, pid, data):
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute("SELECT 1 FROM projects WHERE id = ?", (pid,)).fetchone():
+                raise novel.StoryError("作品不存在。")
+            return draft_store.handle(db, pid, data)
+
+    def drafts(self, pid):
+        with self.connect() as db:
+            if not db.execute("SELECT 1 FROM projects WHERE id = ?", (pid,)).fetchone():
+                raise novel.StoryError("作品不存在。")
+            return draft_store.list_drafts(db, pid)
 
     def settings(self):
         with self.connect() as db:
@@ -336,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(novel.markdown(p), content_type="text/markdown; charset=utf-8", filename="novel.md")
                 if len(parts) == 4 and parts[3] == "backup":
                     return self.respond(self.server.store.backup(p["id"]), filename="novel-backup.json")
+                if len(parts) == 4 and parts[3] == "drafts":
+                    return self.respond(self.server.store.drafts(p["id"]))
                 if len(parts) == 6 and parts[3] == "references" and parts[5] == "image":
                     novel.get_reference(p, parts[4], "character")
                     asset = self.server.store.image(p["id"], parts[4])
@@ -349,6 +367,8 @@ class Handler(BaseHTTPRequestHandler):
             files["/local-edit.js"] = ("local-edit.js", "text/javascript; charset=utf-8")
             files["/local-edit.css"] = ("local-edit.css", "text/css; charset=utf-8")
             files["/backup.js"] = ("backup.js", "text/javascript; charset=utf-8")
+            for name in ("drafts.js", "proposals.js", "proposals.css"):
+                files["/" + name] = (name, "text/css; charset=utf-8" if name.endswith(".css") else "text/javascript; charset=utf-8")
             if path in files:
                 file, mime = files[path]
                 return self.respond((self.server.static_root / file).read_bytes(), content_type=mime)
@@ -400,11 +420,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond({"error": "接口不存在。"}, 404)
             pid, route = parts[2:]
             revision = data.get("revision")
+            if route == "drafts":
+                return self.respond(self.server.store.draft(pid, data))
             if route == "mutate":
                 args = data.get("data", {})
                 if not isinstance(args, dict):
                     raise novel.StoryError("操作参数格式无效。")
-                p = self.server.store.update(pid, revision, lambda p: novel.mutate(p, data.get("action"), args))
+                proposal_actions = {"apply_outline_proposal": proposals.adopt_outline,
+                                    "apply_plan_proposal": proposals.adopt_plan,
+                                    "restore_outline_draft": proposals.restore_outline_draft}
+                action = data.get("action")
+                p = self.server.store.update(pid, revision, lambda p: proposal_actions[action](p, args)
+                                             if action in proposal_actions else novel.mutate(p, action, args))
             elif route == "ai":
                 p = self.server.store.get(pid)
                 if p["revision"] != revision:
@@ -421,6 +448,11 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.settings_lock:
                     config, key = self.server.store.settings(), self.server.api_key
                 result = call_model(config, key, novel.build_context(p, c), action, instructions, c["review"])
+                if action == "plan":
+                    preview = proposals.plan_preview(p, c, result)
+                    if self.server.store.get(pid)["revision"] != revision:
+                        raise Conflict("生成候选期间作品已更新，原场景方案已保留。请重新生成。")
+                    return self.respond({"proposal": preview})
                 p = self.server.store.update(pid, revision, lambda p: novel.apply_ai(p, c["id"], action, result))
             elif route == "edit-preview":
                 p = self.server.store.get(pid)
@@ -453,7 +485,10 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.settings_lock:
                     config, key = self.server.store.settings(), self.server.api_key
                 result = call_model(config, key, {"outline_draft": draft, "brief": p["brief"]}, "split_outline")
-                p = self.server.store.update(pid, revision, lambda p: story_outline.save_proposal(p, result))
+                preview = proposals.outline_preview(p, result)
+                if self.server.store.get(pid)["revision"] != revision:
+                    raise Conflict("生成候选期间大纲已更新，手工草稿已保留。请重新生成。")
+                return self.respond({"proposal": preview})
             elif route == "reference-image":
                 ref, asset = prepare_image(data)
                 p = self.server.store.update(pid, revision, lambda p: novel.add_image_reference(p, ref), image=asset)
@@ -478,7 +513,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 return self.respond({"error": "接口不存在。"}, 404)
             return self.respond({"project": p, "canon": novel.canon(p)})
-        except Conflict as exc:
+        except (Conflict, draft_store.DraftConflict) as exc:
             self.respond({"error": str(exc)}, 409)
         except novel.StoryError as exc:
             self.respond({"error": str(exc)}, 400)

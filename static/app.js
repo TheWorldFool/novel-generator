@@ -33,7 +33,7 @@ async function api(path, body, headers={}) {
   try { response = await fetch(path, options); }
   catch { throw new Error(navigator.userAgent.includes('NovelGeneratorAndroid/') ? '暂时无法连接应用内服务。请保留未保存的文字，稍后重试。' : '无法连接本地服务，请确认 app.py 仍在运行。未保存的文字仍保留在页面中。'); }
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || '操作失败，请重试。');
+  if (!response.ok) { const error = new Error(data.error || '操作失败，请重试。'); error.status=response.status; throw error; }
   return data;
 }
 
@@ -64,6 +64,8 @@ function setBusy(value, label = '正在保存…') {
     document.body.appendChild(node);
   }
   $('#app').inert = value;
+  const form = $('#dialog form');
+  if(form && ['entity-form','project-form','change-form','style-reference-form','image-reference-form','outline-node-form'].includes(form.id)) form.inert = value;
 }
 
 async function run(fn, label) {
@@ -76,6 +78,7 @@ async function run(fn, label) {
 
 function accept(data) {
   state.project = data.project;
+  window.workDrafts?.setProject(data.project.id);
   state.canon = data.canon;
   const entry = state.projects.find(p => p.id === data.project.id);
   if (entry) entry.title = data.project.title;
@@ -225,9 +228,11 @@ function renderSettings() {
 }
 
 function showDialog(html) {
+  window.workDrafts?.captureDialog().catch(()=>{});
   const dialog = $('#dialog');
   dialog.innerHTML = `<button class="dialog-close icon-button" data-action="close-dialog" aria-label="关闭">${icon('close')}</button>${html}`;
   if (!dialog.open) dialog.showModal();
+  window.workDrafts?.dialogOpened();
 }
 
 function entityDialog(kind, id) {
@@ -240,6 +245,7 @@ function changeDialog() {
   if (!entities.length) { toast('先创建人物、世界设定或伏笔，才能记录状态变化。', true); return; }
   showDialog(`<form id="change-form"><div class="eyebrow green">A CHANGE WITH EVIDENCE</div><h2>记下一个变化</h2><p class="help">填写变化后的完整状态，并从正文中复制一句原文作为依据。</p><label class="field">相关档案<select name="entity_id" id="change-entity">${entities.map(e=>`<option value="${e.id}">${esc(e.name)}${e.locked?'（已锁定）':''}</option>`).join('')}</select></label><label class="field">状态字段<select name="field" id="change-field"></select></label><label class="field">变化后的状态<textarea name="value" required rows="3"></textarea></label><label class="field">原文依据<textarea name="evidence" required rows="3" placeholder="从当前正文复制一句完全一致的文字"></textarea></label><div class="dialog-actions"><button type="button" class="button subtle" data-action="close-dialog">取消</button><button class="button primary" type="submit">添加待确认变化</button></div></form>`);
   updateChangeFields();
+  window.workDrafts?.dialogOpened();
 }
 
 function updateChangeFields() {
@@ -248,6 +254,7 @@ function updateChangeFields() {
 }
 
 async function aiAction(action, instructions='') {
+  if(action==='plan') return window.previewScenePlan(instructions);
   await saveCurrent();
   if (!state.settings.model || !state.settings.base_url) {
     state.view = 'settings'; render();
@@ -266,8 +273,8 @@ document.addEventListener('click', event => {
   const button = event.target.closest('[data-action]');
   if (!button || state.busy) return;
   const {action, id, view, tab, task, kind} = button.dataset;
-  if (action.startsWith('ref-') || action.startsWith('out-') || action.startsWith('local-edit-') || action.startsWith('backup-')) return;
-  if (action==='close-dialog') { $('#dialog').close(); return; }
+  if (action.startsWith('ref-') || action.startsWith('out-') || action.startsWith('local-edit-') || action.startsWith('backup-') || action.startsWith('draft-') || action.startsWith('proposal-')) return;
+  if (action==='close-dialog') { if(window.workDrafts) window.workDrafts.requestClose(); else $('#dialog').close(); return; }
   if (action==='editor-tab') {
     captureEditor(); state.editorTab=tab; render(); return;
   }
@@ -350,25 +357,33 @@ document.addEventListener('change', event => {
 });
 
 document.addEventListener('submit', event => {
-  if (event.target.id.includes('reference-form') || event.target.id==='outline-node-form' || event.target.id==='local-edit-form') return;
+  if (event.target.id.includes('reference-form') || event.target.id==='outline-node-form' || event.target.id==='local-edit-form' || event.target.id.startsWith('proposal-')) return;
   event.preventDefault();
+  if(state.busy) return;
   const form=event.target;
   const data=Object.fromEntries(new FormData(form));
   if(form.id==='change-form') {
     const e=state.project.entities.find(e=>e.id===data.entity_id);
     if(e.locked) {toast('该档案已锁定，请先解锁或选择其他档案。',true);return;}
     if(!current().text.includes(data.evidence.trim())) {toast('请从当前正文复制完全一致的原文依据。',true);return;}
-    current().changes.push({...data,id:crypto.randomUUID(),evidence:data.evidence.trim(),selected:false});
-    markDirty(); state.sideTab='changes'; $('#dialog').close();render();return;
+    const change = {...data,id:form.dataset.changeId || crypto.randomUUID(),evidence:data.evidence.trim(),selected:false};
+    form.dataset.changeId = change.id;
+    const existing = current().changes.findIndex(item=>item.id===change.id ||
+      ['entity_id','field','value','evidence'].every(key=>item[key]===change[key]));
+    if(existing<0) current().changes.push(change); else current().changes[existing]=change;
+    markDirty(); state.sideTab='changes';
+    run(async()=>{await saveCurrent();await window.workDrafts?.dialogSaved(form);$('#dialog').close();render();});return;
   }
   run(async()=>{
     if(form.id==='entity-form') {
       const kind=form.dataset.kind;
       const base=Object.fromEntries(Object.keys(state.fields[kind]).map(key=>[key,data['base-'+key]||'']));
       await mutate('save_entity',{id:form.dataset.id,kind,name:data.name,description:data.description,locked:data.locked==='on',base});
+      await window.workDrafts?.dialogSaved(form);
       $('#dialog').close();render();toast('档案已保存。');
     } else if(form.id==='project-form') {
       await saveCurrent(); const result=await api('/api/projects',{title:data.title});
+      await window.workDrafts?.dialogSaved(form);
       state.projects.unshift({id:result.project.id,title:result.project.title});accept(result);state.chapterId=state.project.chapters[0].id;state.view='outline';$('#dialog').close();render();
     } else if(form.id==='settings-form') {
       state.settings=await api('/api/settings',{...data,max_tokens:Number(data.max_tokens),clear_key:data.clear_key==='on'});render();toast('模型设置已保存；首次生成时会验证连接。');

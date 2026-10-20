@@ -74,3 +74,15 @@ test('busy model operations do not start a competing autosave',async()=>{
   await context.mobileFlush();
   assert.equal(calls.length,0);
 });
+
+test('Android back waits for unfinished input persistence before leaving',async()=>{
+  const {context,state,messages}=setup();
+  state.dirty=false;
+  let complete, pending=true;
+  context.workDrafts={hasPending:()=>pending,flush:()=>new Promise(resolve=>{complete=()=>{pending=false;resolve();};})};
+  assert.equal(context.mobileBack(),'stay');
+  assert.equal(pending,true);
+  complete();await Promise.resolve();
+  assert.match(messages.at(-1),/草稿已保留/);
+  assert.equal(context.mobileBack(),'exit');
+});

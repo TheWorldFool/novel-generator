@@ -77,6 +77,28 @@ public class RuntimeSmokeTest {
         finally { connection.disconnect(); }
     }
 
+    @Test public void unfinishedInputsPersistBesideTheStory() throws Exception {
+        assertTrue(request("/drafts.js", null).contains("workDrafts"));
+        assertTrue(request("/proposals.js", null).contains("previewScenePlan"));
+        JSONObject book = new JSONObject(request("/api/projects", new JSONObject().put("title", "未完成输入测试"))).getJSONObject("project");
+        String path = "/api/projects/" + book.getString("id") + "/drafts";
+        String key = "dialog:entity-form:character:new";
+        JSONObject value = new JSONObject().put("description", "返回后继续完善的人物小传").put("locked", true);
+        JSONObject written = new JSONObject(request(path, new JSONObject().put("action", "write").put("key", key)
+                .put("expected_version", 0).put("value", value))).getJSONObject("draft");
+        assertEquals(1, written.getInt("version"));
+        JSONObject read = new JSONObject(request(path, new JSONObject().put("action", "read").put("key", key))).getJSONObject("draft");
+        assertEquals(value.getString("description"), read.getJSONObject("value").getString("description"));
+        assertTrue(read.getJSONObject("value").getBoolean("locked"));
+        JSONObject reloaded = new JSONObject(request("/api/projects/" + book.getString("id"), null)).getJSONObject("project");
+        assertEquals(book.getInt("revision"), reloaded.getInt("revision"));
+        assertEquals(1, new JSONObject(request(path, null)).getJSONArray("drafts").length());
+        JSONObject removed = new JSONObject(request(path, new JSONObject().put("action", "delete").put("key", key)
+                .put("expected_version", 1))).getJSONObject("draft");
+        assertTrue(removed.isNull("value"));
+        assertEquals(2, removed.getInt("version"));
+    }
+
     @Test public void nativeActivityStartsWithTheEmbeddedRuntime() throws Exception {
         application().runtime.get(60, TimeUnit.SECONDS);
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();

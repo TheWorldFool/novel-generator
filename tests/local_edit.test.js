@@ -10,16 +10,16 @@ const unescape = text => text.replace(/&(amp|lt|gt|quot|#39);/g,(_,name)=>({amp:
 
 // Execute the real production listeners with the small DOM surface they need.
 // Provider responses are controlled promises, so races are deterministic.
-function harness(text='前😀句。\n\n后面保持。') {
+function harness(text='前😀句。\n\n后面保持。', {store,projectId='book-1',read,write}={}) {
   const listeners={}, nodes={}, dialogs=[], calls=[], errors=[], messages=[];
   let rendered=0, saves=0;
   const input = nodes['#chapter-text']={id:'chapter-text',value:text,selectionStart:1,selectionEnd:4,
     before(node){nodes['#local-edit-toolbar']=node;nodes['#local-edit-selection']={};nodes['#local-edit-resume']={hidden:true};}};
-  const dialog=nodes['#dialog']={open:false,close(){this.open=false;}};
+  const dialog=nodes['#dialog']={open:false,close(){this.open=false;for(const fn of listeners.close||[])fn({target:this});}};
   const chapter={id:'chapter-1',text};
   const context={Map,Error,console,Promise,
     document:{activeElement:input,addEventListener(type,fn){(listeners[type]||=[]).push(fn);},createElement(){return {}; }},
-    state:{project:{id:'book-1',revision:3,chapters:[chapter]},dirty:false,busy:false,view:'write'},
+    state:{project:{id:projectId,revision:3,chapters:[chapter]},dirty:false,busy:false,view:'write'},
     $(selector){return nodes[selector]??null;},
     current(){return context.state.project.chapters[0];},
     esc(value){return String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));},
@@ -55,6 +55,11 @@ function harness(text='前😀句。\n\n后面保持。') {
       context.state.busy=true;
       context.pending=Promise.resolve().then(fn).catch(error=>errors.push(error.message)).finally(()=>{context.state.busy=false;});
     },
+  };
+  if(store)context.workDrafts={
+    async read(key,pid){return read?read(key,pid):structuredClone(store.get(`${pid}:${key}`)||null);},
+    async write(key,value,pid){if(write)return write(key,value,pid);store.set(`${pid}:${key}`,structuredClone(value));},
+    async remove(key,pid){store.delete(`${pid}:${key}`);},
   };
   context.window=context;
   vm.createContext(context);vm.runInContext(source,context,{filename:'local-edit.js'});
@@ -243,4 +248,109 @@ test('closing during adoption with new input does not reopen a completed dialog'
   complete({project:updated,canon:[]});await pending;
   assert.equal(h.dialog.open,false);assert.equal(h.dialogs.length,before);
   await h.click('local-edit-resume');assert.equal(h.nodes['#local-edit-instructions'].value,'保留的新意见');
+});
+
+test('unfinished instructions and hand-edited preview survive a fresh app session',async()=>{
+  const store=new Map(),h=harness(undefined,{store});
+  await h.click('local-edit-selection');await h.submit('先润色');
+  h.nodes['#local-edit-replacement'].value='作者尚未采用的手改';
+  h.nodes['#local-edit-instructions'].value='下一轮保留停顿';
+  h.dispatch('input',{target:h.nodes['#local-edit-instructions']});
+  await h.click('local-edit-cancel');
+  const reopened=harness(undefined,{store});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(reopened.nodes['#local-edit-resume'].hidden,false);
+  await reopened.click('local-edit-resume');
+  assert.equal(reopened.nodes['#local-edit-instructions'].value,'下一轮保留停顿');
+  assert.equal(reopened.nodes['#local-edit-replacement'].value,'作者尚未采用的手改');
+  assert.match(reopened.dialogs.at(-1),/已恢复上次未采用/);
+  assert.equal(reopened.calls.length,0);
+  await reopened.click('local-edit-apply');
+  assert.equal(reopened.calls[0].body.data.source_hash,'signed-source-hash');
+  assert.equal(store.size,0);
+});
+
+test('restored previews remain isolated by project and stale revisions cannot be adopted',async()=>{
+  const store=new Map(),h=harness(undefined,{store});
+  await h.click('local-edit-selection');await h.submit('微调');
+  const other=harness(undefined,{store,projectId:'book-2'});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(other.nodes['#local-edit-resume'].hidden,true);
+  const reopened=harness(undefined,{store});reopened.context.state.project.revision=8;
+  await new Promise(resolve=>setImmediate(resolve));
+  await reopened.click('local-edit-resume');
+  assert.match(reopened.dialogs.at(-1),/作品已经更新/);
+  assert.match(reopened.dialogs.at(-1),/data-action="local-edit-apply" disabled/);
+  await reopened.click('local-edit-apply');
+  assert.equal(reopened.calls.length,0);
+  assert.match(reopened.errors.at(-1),/预览已过期/);
+  await reopened.submit('按新设定重新核对');
+  assert.equal(reopened.calls[0].body.revision,8);
+});
+
+test('restoring against changed source preserves copyable work without replacing text',async()=>{
+  const store=new Map(),h=harness(undefined,{store});
+  await h.click('local-edit-selection');await h.submit('微调');
+  const reopened=harness('正文已经改写。',{store});
+  await new Promise(resolve=>setImmediate(resolve));await reopened.click('local-edit-resume');
+  assert.match(reopened.dialogs.at(-1),/正文已变化/);
+  assert.equal(reopened.nodes['#local-edit-replacement'].value,'更自然的文字');
+  await reopened.click('local-edit-apply');
+  assert.equal(reopened.calls.length,0);
+  assert.equal(reopened.context.current().text,'正文已经改写。');
+});
+
+test('storage failure retains the in-memory draft and explains durability failure',async()=>{
+  const h=harness(undefined,{store:new Map(),write:async()=>{throw new Error('disk full');}});
+  await h.click('local-edit-selection');h.nodes['#local-edit-instructions'].value='不要丢掉这句意见';
+  await h.click('local-edit-cancel');await Promise.resolve();
+  await h.click('local-edit-resume');
+  assert.equal(h.nodes['#local-edit-instructions'].value,'不要丢掉这句意见');
+  assert.ok(h.errors.some(message=>message.includes('暂未保存到本机')));
+});
+
+test('closing without an input event persists the final IME value',async()=>{
+  const store=new Map(),h=harness(undefined,{store});
+  await h.click('local-edit-selection');
+  h.nodes['#local-edit-instructions'].value='输入法最后提交的意见';h.dialog.close();
+  const reopened=harness(undefined,{store});await new Promise(resolve=>setImmediate(resolve));
+  await reopened.click('local-edit-resume');
+  assert.equal(reopened.nodes['#local-edit-instructions'].value,'输入法最后提交的意见');
+});
+
+test('failed auxiliary draft cleanup does not report a successful adoption as failed',async()=>{
+  const h=harness(undefined,{store:new Map()});
+  h.context.workDrafts.remove=async()=>{throw new Error('disk full');};
+  await h.click('local-edit-selection');await h.submit('微调');await h.click('local-edit-apply');
+  assert.equal(h.context.current().text,'前更自然的文字。\n\n后面保持。');
+  assert.equal(h.dialog.open,false);
+  assert.equal(h.calls.length,2);
+  assert.ok(h.errors.some(message=>message.includes('正文已采用')));
+  h.context.decorateLocalEdit();
+  assert.equal(h.nodes['#local-edit-resume'].hidden,true);
+});
+
+test('successful adoption closes the editable form before slow draft cleanup',async()=>{
+  const h=harness(undefined,{store:new Map()});let complete;
+  h.context.workDrafts.remove=()=>new Promise(resolve=>{complete=resolve;});
+  await h.click('local-edit-selection');await h.submit('微调');
+  const pending=h.click('local-edit-apply');while(!complete)await Promise.resolve();
+  assert.equal(h.dialog.open,false);
+  assert.equal(h.context.current().text,'前更自然的文字。\n\n后面保持。');
+  complete();await pending;
+});
+
+test('closing during the auxiliary save of late inputs does not reopen the dialog',async()=>{
+  const h=harness(undefined,{store:new Map()});
+  await h.click('local-edit-selection');await h.submit('微调');
+  let answer;
+  h.context.request=()=>new Promise(resolve=>{answer=resolve;});
+  const pending=h.click('local-edit-apply');while(!answer)await Promise.resolve();
+  h.nodes['#local-edit-instructions'].value='采用等待时的新意见';
+  const saves=[];
+  h.context.workDrafts.write=()=>new Promise(resolve=>{saves.push(resolve);});
+  const updated=structuredClone(h.context.state.project);updated.revision++;updated.chapters[0].text='已采用的正文';
+  answer({project:updated});while(!saves.length)await Promise.resolve();
+  const before=h.dialogs.length;h.dialog.close();saves.forEach(resolve=>resolve());await pending;
+  assert.equal(h.dialog.open,false);assert.equal(h.dialogs.length,before);
 });

@@ -22,7 +22,7 @@ python tools/build_android.py --setup
 
 首次会下载并校验 Android command-line tools 19.0、Gradle 8.13，并安装 SDK 35。SDK 工具要求接受其许可证。工具缓存位于 `%LOCALAPPDATA%\NovelGenerator\toolchain`，不会写进 Git。以后可省略 `--setup`。
 
-输出为 `dist/novel-generator-0.2.3-android.apk` 与 SHA-256 校验文件，版本号从构建产物读取。脚本先执行 `assembleRelease` 和 `lintRelease`，成功后才复制 APK。
+输出为 `dist/novel-generator-0.2.4-android.apk` 与 SHA-256 校验文件，版本号从构建产物读取。脚本先执行 `assembleRelease` 和 `lintRelease`，成功后才复制 APK。
 
 签名首次生成在 `%LOCALAPPDATA%\NovelGenerator\signing`，包括 `.jks` 和保存随机密码的 `.json`。**请私下备份整个签名目录**：后续更新必须使用同一密钥。这些文件不在仓库里；不要上传 GitHub。构建过程通过环境变量把密码交给工具，不把密码放在命令参数中。
 
@@ -52,8 +52,8 @@ GitHub Actions 构建调试 APK、运行 Lint，并在 Android API 35 模拟器�
 - WebView 只加载当前应用内地址，禁止任意网站跳转；无 JavaScript 到 Java 的通用桥接接口。
 - 本地服务每次进程启动创建随机会话令牌，用 HttpOnly Cookie 鉴权。其他手机应用即使访问同一个回环端口，也不能在无令牌时读取小说或修改数据。桌面端原有 Host/Origin 检查保留。
 - API 密钥只在 Python 进程内存保留；作品、图片、非秘密设置存于应用私有 SQLite。禁用自动云备份和设备迁移；请主动导出作品。可以在「模型设置 → 从 JSON 备份恢复作品」把导出的作品恢复为新作品。
-- 停止输入后自动保存草稿，仍由作者确认正文、人物变化和大纲。活动弹窗、模型设置、参考文件采用等操作需点击相应按钮提交。
+- 停止输入后自动保存作品草稿，仍由作者确认正文、人物变化和大纲。人物、参考和节点弹窗的未完成输入、微调与图片纠错会话也保存在本机；关闭或重启后可继续，正式保存和采用仍需点击对应按钮。
 - Android 可以回收后台进程；这版不承诺后台持续生成。请在生成结束后再切换应用。
-- 暂无电脑同步、JSON 导入、应用内自动升级和商店分发。
+- 支持 JSON 备份手动迁移，尚无自动电脑同步、应用内自动升级和商店分发。未采用的弹窗会话不包含在 JSON 作品备份中，迁移前请先保存需要保留的内容。
 
 实现依据：[Chaquopy Gradle 文档](https://chaquo.com/chaquopy/doc/current/android.html)、[Android 系统文件选择器](https://developer.android.com/training/data-storage/shared/documents-files)、[Android 网络安全配置](https://developer.android.com/privacy-and-security/security-config)。

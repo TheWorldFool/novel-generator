@@ -24,6 +24,8 @@ if (navigator.userAgent.includes('NovelGeneratorAndroid/')) {
   }
 
   window.mobileFlush = function () {
+    window.workDrafts?.captureDialog().catch(()=>{});
+    window.workDrafts?.flush().catch(()=>{});
     if(window.mobileSavePending) return window.mobileSavePending;
     if(!state.project || !state.dirty || state.busy || saveBlocked || $('#dialog')?.open) return Promise.resolve();
     const operation = currentSaveOperation();
@@ -65,8 +67,12 @@ if (navigator.userAgent.includes('NovelGeneratorAndroid/')) {
 
   window.mobileBack = function () {
     if(window.backupImportBusy?.()) { toast('正在恢复作品，请稍候再返回。'); return 'stay'; }
-    if($('#dialog')?.open) { $('#dialog').close(); return 'stay'; }
+    if($('#dialog')?.open) { if(window.workDrafts) window.workDrafts.requestClose(); else $('#dialog').close(); return 'stay'; }
     if(state.busy || window.mobileSavePending) { toast('正在处理，请稍候再返回。'); return 'stay'; }
+    if(window.workDrafts?.hasPending?.()) {
+      window.workDrafts.flush().then(()=>toast('输入草稿已保留，再按返回即可退出。')).catch(()=>toast('输入草稿尚未保留，请先复制输入或重试。',true));
+      return 'stay';
+    }
     if(state.dirty) {
       saveBlocked = false;
       window.mobileFlush();

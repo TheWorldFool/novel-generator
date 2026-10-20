@@ -5,11 +5,12 @@ import novel
 
 
 def empty():
-    return {"draft": {"text": "", "ending": "", "guardrails": "", "nodes": []}, "active": None, "version": 0, "history": []}
+    return {"draft": {"text": "", "ending": "", "guardrails": "", "nodes": []}, "active": None, "version": 0, "history": [], "draft_history": []}
 
 
 def ensure(p):
     p.setdefault("book_outline", empty())
+    p["book_outline"].setdefault("draft_history", [])
     for c in p["chapters"]:
         c.setdefault("node_id", "")
         c.setdefault("completes_node", False)
@@ -69,24 +70,17 @@ def mutate(p, action, data):
         old = next((x for x in book["history"] if x["version"] == data.get("version")), None)
         if not old:
             raise novel.StoryError("大纲历史版本不存在。")
+        import proposals
+        proposals.checkpoint_outline(book, "恢复生效旧版前的大纲草稿")
         book["draft"] = copy.deepcopy(old["outline"])
     else:
         raise novel.StoryError("未知全书大纲操作。")
 
 
 def save_proposal(p, result):
-    book = ensure(p)
-    if not isinstance(result, dict) or not isinstance(result.get("nodes"), list) or not result["nodes"]:
-        raise novel.StoryError("模型没有返回有效的阶段节点，现有大纲已保留。")
-    # The model may split the author's text, but never rewrite that source or publish it.
-    draft = {**book["draft"], "nodes": [{**node, "id": novel.uid()} for node in result["nodes"] if isinstance(node, dict)]}
-    if len(draft["nodes"]) != len(result["nodes"]):
-        raise novel.StoryError("模型返回的节点格式无效。")
-    if not draft["ending"]:
-        draft["ending"] = novel.bounded_string(result.get("ending", ""), 5000)
-    proposal = clean_draft(draft, require_nodes=True, allow_open_ending=True)
-    book["draft"] = proposal
-    novel.log(p, "已按用户大纲提议阶段节点，等待作者确认生效。")
+    # Compatibility helper: callers must explicitly adopt this returned preview.
+    import proposals
+    return proposals.outline_preview(p, result)
 
 
 def completed_before(p, c):

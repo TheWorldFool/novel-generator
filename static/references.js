@@ -8,12 +8,45 @@ let pendingReferenceImage = null;
 let imageSelectionVersion = 0;
 const referenceFeedbackDrafts = new Map();
 const characterReferenceDrafts = new Map();
+const referenceDraftLoads = new Map();
+const referenceStorageFailures = new Set();
+let referencePreviewSequence = 0;
 
 const referenceDraftKey = id => `${state.project.id}:${id}`;
+const referenceSessionKey = id => `reference-session:${id}`;
+
+function persistReferenceSession(id, projectId=state.project.id) {
+  if(!window.workDrafts)return Promise.resolve();
+  const key=`${projectId}:${id}`;
+  return window.workDrafts.write(referenceSessionKey(id),{
+    feedback:referenceFeedbackDrafts.get(key)||'',adoption:characterReferenceDrafts.get(key)||null,
+  },projectId).then(()=>referenceStorageFailures.delete(key)).catch(()=>{
+    if(!referenceStorageFailures.has(key))toast('参考纠正草稿暂未保存到本机，请保持页面打开并稍后重试。你的输入仍保留在当前页面。',true);
+    referenceStorageFailures.add(key);
+  });
+}
+
+function loadReferenceSession(id,projectId=state.project.id) {
+  const key=`${projectId}:${id}`;
+  if(!window.workDrafts)return Promise.resolve();
+  if(referenceDraftLoads.has(key))return referenceDraftLoads.get(key);
+  const pending=window.workDrafts.read(referenceSessionKey(id),projectId).then(saved=>{
+    if(!saved)return;
+    // A delayed read must not replace text entered while it was in flight.
+    if(!referenceFeedbackDrafts.has(key)&&typeof saved.feedback==='string')referenceFeedbackDrafts.set(key,saved.feedback);
+    if(!characterReferenceDrafts.has(key)&&saved.adoption&&saved.adoption.values&&typeof saved.adoption.values==='object'&&Array.isArray(saved.adoption.selected))
+      characterReferenceDrafts.set(key,{...saved.adoption,recovered:true});
+  }).catch(()=>{
+    referenceDraftLoads.delete(key);
+    toast('暂时无法读取上次参考纠正草稿，请稍后重试。',true);
+  });
+  referenceDraftLoads.set(key,pending);
+  return pending;
+}
 
 function rememberCharacterReferenceDraft(id) {
   const form=$('#apply-character-reference-form');
-  if(!form || form.dataset.id!==id || form.dataset.project!==state.project.id || !form.referenceCandidateValues) return;
+  if(!form || form.referenceSessionSaved || form.dataset.id!==id || form.dataset.project!==state.project.id || !form.referenceCandidateValues) return;
   const initial=form.referenceCandidateValues, values={};
   for(const input of $$('[name^="value-"]',form)) {
     const key=input.name.slice(6);
@@ -25,6 +58,7 @@ function rememberCharacterReferenceDraft(id) {
   if(form.elements.entity_id.value!==initial.entity_id) draft.entity_id=form.elements.entity_id.value;
   draft.modified=Object.keys(values).length>0 || 'name' in draft || 'entity_id' in draft || selected.length!==1 || selected[0]!=='appearance';
   characterReferenceDrafts.set(referenceDraftKey(id),draft);
+  persistReferenceSession(id);
 }
 
 function referenceFeedbackSection(r) {
@@ -103,9 +137,13 @@ async function chooseReferenceImage(file) {
   $('#reference-image-preview').hidden=false;
   const title=$('#image-reference-form [name="title"]');
   if(!title.value) title.value=file.name.replace(/\.[^.]+$/, '').slice(0,200) || '人物参考图';
+  window.workDrafts?.captureDialog().catch(()=>{});
 }
 
-function referencePreview(id) {
+async function referencePreview(id) {
+  const projectId=state.project.id, sequence=++referencePreviewSequence;
+  if(window.workDrafts)await loadReferenceSession(id,projectId);
+  if(state.project.id!==projectId || sequence!==referencePreviewSequence)return;
   const r=state.project.references.find(r=>r.id===id), a=r.analysis;
   if(!a) {
     showDialog(`<div class="eyebrow green">REFERENCE MATERIAL</div><h2>${esc(r.title)}</h2>${r.kind==='style'?`<pre class="version-prose">${esc(r.text)}</pre>`:`<img class="reference-preview-large" src="${referenceImageURL(r.id)}" alt="${esc(r.title)}">`}<p class="help">${esc(r.notes||'尚未填写参考重点。')}</p><div class="dialog-actions"><button class="button primary" data-action="ref-analyze" data-id="${r.id}">${icon('spark')}${r.kind==='style'?'分析文风':'读图分析'}</button></div>`);return;
@@ -124,6 +162,7 @@ function referencePreview(id) {
     ${a.uncertainties.length?`<div class="notice amber">${a.uncertainties.map(esc).join('<br>')}</div>`:''}
     ${referenceFeedbackSection(r)}
     <h3 class="reference-adoption-heading">核对本轮建议，再选择采用</h3>
+    ${draft?.recovered?'<div class="notice" role="status">已恢复上次未采用的参考草稿，请核对手改内容和勾选。</div>':''}
     ${draft?.modified?`<div class="notice reference-draft-notice">你手动编辑的采用内容和勾选已保留，未编辑的建议会随分析更新。<button type="button" class="text-button" data-action="ref-reset-draft" data-id="${r.id}">恢复本轮分析的全部建议</button></div>`:''}
     <label class="field">应用到哪个人物？<select name="entity_id"><option value="">建立新人物</option>${state.project.entities.filter(e=>e.kind==='character').map(e=>`<option value="${e.id}" ${e.id===entityId?'selected':''}>${esc(e.name)}${e.locked?'（已锁定）':''}</option>`).join('')}</select></label>
     <label class="field">新人物名称（选择已有角色时不改名）<input name="name" value="${esc(draft&&'name' in draft?draft.name:c.name)}" maxlength="100"></label>
@@ -137,6 +176,9 @@ function referencePreview(id) {
 }
 
 async function analyzeReference(id, feedback, feedbackAtSubmit) {
+  const projectId=state.project.id;
+  if(window.workDrafts)await loadReferenceSession(id,projectId);
+  if(state.project.id!==projectId)return;
   const r=state.project.references.find(r=>r.id===id);
   const model=r.kind==='character'?(state.settings.vision_model||state.settings.model):state.settings.model;
   if(!state.settings.base_url||!model) throw new Error('参考材料已保存。请先在「模型设置」配置模型；读图需要支持图片输入的模型。');
@@ -144,9 +186,13 @@ async function analyzeReference(id, feedback, feedbackAtSubmit) {
   const payload={revision:state.project.revision,id};
   if(feedback!==undefined) payload.feedback=feedback;
   const activeForm=$('#apply-character-reference-form');
+  const startedPreviewSequence=referencePreviewSequence;
   const feedbackInput=activeForm?.dataset.id===id?$('#apply-character-reference-form [name="feedback"]'):null;
   const submittedFeedback=feedbackAtSubmit===undefined?feedbackInput?.value:feedbackAtSubmit;
-  accept(await api(`/api/projects/${state.project.id}/analyze-reference`, payload));
+  const result=await api(`/api/projects/${projectId}/analyze-reference`, payload);
+  if(state.project.id!==projectId) {toast('参考分析已保存到原作品。');return;}
+  rememberCharacterReferenceDraft(id);
+  accept(result);
   // The dialog remains editable while the request is running. Only clear the
   // submitted text; any new feedback belongs to the next correction round.
   if(feedbackInput && feedbackInput.value!==submittedFeedback) {
@@ -155,7 +201,11 @@ async function analyzeReference(id, feedback, feedbackAtSubmit) {
     referenceFeedbackDrafts.delete(referenceDraftKey(id));
     if(feedbackInput)feedbackInput.value='';
   }
-  render();referencePreview(id);
+  await persistReferenceSession(id,projectId);
+  const stillVisible=!activeForm || ($('#apply-character-reference-form')===activeForm && ($('#dialog')?.open ?? true));
+  render();
+  if(stillVisible && startedPreviewSequence===referencePreviewSequence)await referencePreview(id);
+  else toast('参考分析已保存，可从“审阅与采用”继续查看。');
   toast(feedback!==undefined?'已按你的意见修正。请核对本轮建议，再选择采用。':'分析已保存。请选择要采用的部分，现有设定还没有改变。');
 }
 
@@ -166,16 +216,16 @@ document.addEventListener('click',event=>{
   if(action==='ref-tab'){referenceTab=tab;render();return;}
   if(action==='ref-new-style'||action==='ref-edit-style'){styleReferenceDialog(id);return;}
   if(action==='ref-upload'){imageReferenceDialog(entity);return;}
-  if(action==='ref-preview'){referencePreview(id);return;}
+  if(action==='ref-preview'){run(()=>referencePreview(id));return;}
   if(action==='ref-feedback') {
-    referencePreview(id);
-    const input=$('#reference-feedback-input');
-    input?.scrollIntoView({block:'center'});input?.focus({preventScroll:true});return;
+    run(async()=>{await referencePreview(id);const input=$('#reference-feedback-input');
+      input?.scrollIntoView({block:'center'});input?.focus({preventScroll:true});});return;
   }
   if(action==='ref-reset-draft') {
     const form=$('#apply-character-reference-form');
     if(form)form.referenceCandidateValues=null;
-    characterReferenceDrafts.delete(referenceDraftKey(id));referencePreview(id);return;
+    characterReferenceDrafts.delete(referenceDraftKey(id));
+    run(async()=>{await persistReferenceSession(id);await referencePreview(id);});return;
   }
   if(action==='ref-correct') {
     const input=$('#reference-feedback-input'), rawFeedback=input?.value||'', feedback=rawFeedback.trim();
@@ -189,16 +239,30 @@ document.addEventListener('click',event=>{
     showDialog(`<div class="eyebrow green">START FROM THE IMAGE</div><h2>完全重新分析这张图片？</h2><p>模型将从原图和参考重点重新开始，本轮不沿用之前的纠正意见。旧结果会保留在分析历史中，手动编辑的采用内容也会保留。</p><div class="dialog-actions"><button type="button" class="button subtle" data-action="ref-preview" data-id="${id}">返回审阅</button><button type="button" class="button primary" data-action="ref-reanalyze-confirm" data-id="${id}">完全重新分析</button></div>`);return;
   }
   if(action==='ref-reanalyze-confirm') {
-    run(async()=>{await saveCurrent();try{await analyzeReference(id);}catch(error){referencePreview(id);throw error;}},'正在从原图重新分析…');return;
+    run(async()=>{await saveCurrent();try{await analyzeReference(id);}catch(error){if($('#dialog')?.open ?? true)await referencePreview(id);throw error;}},'正在从原图重新分析…');return;
   }
   if(action==='ref-open') {run(async()=>{await saveCurrent();referenceTab=tab||'style';state.view='references';render();});return;}
   if(action==='ref-analyze') {run(async()=>{await saveCurrent();await analyzeReference(id);},'正在分析参考材料，请稍候…');}
 });
 
+// Closing a dialog also cancels any delayed attempt to reopen that preview.
+function captureReferenceDialog() {
+  const form=$('#apply-character-reference-form');
+  if(!form || form.referenceSessionSaved || form.dataset.project!==state.project.id)return;
+  const feedback=$('#reference-feedback-input');
+  if(feedback)referenceFeedbackDrafts.set(referenceDraftKey(form.dataset.id),feedback.value);
+  rememberCharacterReferenceDraft(form.dataset.id);
+}
+document.addEventListener('close',()=>{referencePreviewSequence++;captureReferenceDialog();},true);
+document.addEventListener('cancel',captureReferenceDialog,true);
+document.addEventListener('click',event=>{
+  if(event.target.closest('[data-action]')?.dataset.action==='close-dialog')captureReferenceDialog();
+},true);
+
 document.addEventListener('input',event=>{
   if(event.target.id==='reference-feedback-input') {
     const form=event.target.closest('#apply-character-reference-form');
-    if(form)referenceFeedbackDrafts.set(referenceDraftKey(form.dataset.id),event.target.value);
+    if(form){referenceFeedbackDrafts.set(referenceDraftKey(form.dataset.id),event.target.value);persistReferenceSession(form.dataset.id);}
     return;
   }
   const form=event.target.closest('#apply-character-reference-form');
@@ -221,6 +285,7 @@ document.addEventListener('change',event=>{
       if(!form.isConnected)return;
       form.elements.text.value=text;
       if(!form.elements.title.value)form.elements.title.value=file.name.replace(/\.[^.]+$/,'').slice(0,200);
+      window.workDrafts?.captureDialog().catch(()=>{});
     })().catch(err=>toast(err.message,true));
   }
   if(event.target.id==='reference-mode')run(async()=>{try{await mutate('set_reference_mode',{mode:event.target.value});}finally{render();}});
@@ -252,19 +317,39 @@ document.addEventListener('submit',event=>{
     if(form.id==='style-reference-form'){
       await mutate('save_style_reference',{...data,id});
       id=id||state.project.references.at(-1).id;
+      await window.workDrafts?.dialogSaved(form);
       referenceTab='style';state.view='references';$('#dialog').close();render();
       if(mode==='analyze')await analyzeReference(id);else toast('文字参考已保存，尚未启用为写作样例。');
     }else if(form.id==='image-reference-form'){
       if(!image)throw new Error('请先选择或粘贴人物参考图。');
       accept(await api(`/api/projects/${state.project.id}/reference-image`,{...data,...image,revision:state.project.revision}));
       id=state.project.references.at(-1).id;
+      await window.workDrafts?.dialogSaved(form);
       referenceTab='character';state.view='references';$('#dialog').close();render();
       if(mode==='analyze')await analyzeReference(id);else toast('人物参考图已保存，尚未影响人物设定。');
     }else{
       const fields=fd.getAll('fields');
       const values=Object.fromEntries(fields.map(key=>[key,data['value-'+key]]));
       await mutate(form.id==='apply-style-reference-form'?'apply_style_analysis':'apply_character_reference',{id,fields,values,entity_id:data.entity_id,name:data.name});
-      if(form.id==='apply-character-reference-form')characterReferenceDrafts.delete(referenceDraftKey(id));
+      if(form.id==='apply-character-reference-form'){
+        // Capture late edits before removing only the version that was adopted.
+        rememberCharacterReferenceDraft(id);
+        const feedback=$('#reference-feedback-input');
+        if(feedback)referenceFeedbackDrafts.set(referenceDraftKey(id),feedback.value);
+        const latest=characterReferenceDrafts.get(referenceDraftKey(id));
+        const hasLateEdits=fd.getAll('fields').join('|')!==latest.selected.join('|') ||
+          [...form.elements].some(input=>input.name && input.type!=='checkbox' && input.name!=='feedback' && String(fd.get(input.name)??'')!==input.value);
+        if(!hasLateEdits){
+          characterReferenceDrafts.delete(referenceDraftKey(id));
+        }
+        // Unsent opinions and edits made during adoption belong to the next round.
+        const persistence=persistReferenceSession(id);
+        form.referenceSessionSaved=true;
+        $('#dialog').close();render();
+        await persistence;
+        toast('已采用勾选的设定。未勾选的建议仍保留在参考分析中。');
+        return;
+      } else await window.workDrafts?.dialogSaved(form);
       $('#dialog').close();render();toast('已采用勾选的设定。未勾选的建议仍保留在参考分析中。');
     }
   },mode==='analyze'?'正在保存并分析参考材料…':'正在保存…');

@@ -21,6 +21,8 @@ function renderBookOutline(){
     <div class="outline-layout"><section class="form-card"><div class="form-heading"><span class="entity-symbol">${icon('book')}</span><div><h2>用户给出的全书大纲</h2><p>写清开端、主要转折、高潮和结局，可以直接粘贴已有大纲。</p></div></div><label class="field">全书大纲原文<textarea id="book-outline-text" rows="15" maxlength="30000" placeholder="开端：主角处于怎样的困境？\n发展：必须经历哪些事件与选择？\n转折：什么真相或代价改变局面？\n高潮：主角必须作出什么决定？\n结局：最终谁发生了什么变化？">${esc(d.text)}</textarea></label><label class="field">确定的结局<textarea id="book-outline-ending" rows="3" maxlength="5000" placeholder="明确写出最终结果，模型不能擅自改成其他结局。">${esc(d.ending)}</textarea></label><label class="field">不可改动的约束<textarea id="book-outline-guardrails" rows="4" maxlength="5000" placeholder="例如：主角不黑化；父亲在中段才出现；最终用证据揭开旧案，不能靠新能力解决。">${esc(d.guardrails)}</textarea></label><div class="button-row"><button class="button outline" data-action="out-split">${icon('spark')}按我的大纲拆解节点</button><button class="button subtle" data-action="out-add-node">${icon('plus')}手动添加节点</button></div><p class="help">AI 拆解只提出候选节点，不自动生效、不重写你的原文；没有明确结局时会留给你补充。无需模型也可以手动建立节点。</p></section>
     <section class="outline-nodes"><div class="section-header"><h2>阶段节点 · 大纲草稿</h2><span class="tiny muted">${d.nodes.length} 个节点 · 按故事顺序</span></div>${d.nodes.map((n,i)=>`<article class="outline-node"><div class="outline-node-heading"><span>${String(i+1).padStart(2,'0')}</span><h3>${esc(n.title||'未命名阶段')}</h3><button class="text-button" data-action="out-edit-node" data-id="${esc(n.id)}">编辑</button></div><dl>${[['goal','目标'],['must','必经事件'],['avoid','禁止提前']].map(([key,label])=>`<div><dt>${label}</dt><dd>${esc(n[key]||'尚未填写')}</dd></div>`).join('')}</dl>${n.source_quote?`<details class="analysis-evidence"><summary>查看大纲依据</summary><blockquote>${esc(n.source_quote)}</blockquote>${!d.text.includes(n.source_quote)?'<small class="warning-text">此引用不在当前大纲中，请编辑后再确认生效。</small>':''}</details>`:''}<div class="outline-node-actions"><button class="text-button" data-action="out-move-node" data-id="${esc(n.id)}" data-direction="-1" ${i===0?'disabled':''}>↑ 上移</button><button class="text-button" data-action="out-move-node" data-id="${esc(n.id)}" data-direction="1" ${i===d.nodes.length-1?'disabled':''}>↓ 下移</button><button class="text-button muted" data-action="out-remove-node" data-id="${esc(n.id)}">从草稿移除</button></div></article>`).join('')||'<div class="empty wide">'+icon('layers')+'<h3>把主线拆成可推进的阶段</h3><p>一个阶段可以写一章，也可以分成多章。<br>完成当前阶段后，才能开始下一个。</p></div>'}</section></div>
     ${book.active?`<section class="form-card outline-active"><div class="section-header"><h2>当前生效大纲与章节承接</h2><span class="badge approved">v${book.version}</span></div><p class="help">只有已确认正文中带有完成依据的阶段，才会显示为已完成。</p>${nodes.map((n,i)=>{const chapters=state.project.chapters.filter(c=>c.node_id===n.id);return `<div class="active-node-row"><span class="badge ${done.includes(n)?'approved':'draft'}">${done.includes(n)?'已完成':'待推进'}</span><div><strong>${i+1}. ${esc(n.title)}</strong><p>${esc(n.goal)}</p><small>${chapters.length?chapters.map(c=>`${esc(c.title)}（${statusName[c.status]}${c.completes_node?' · 拟完成节点':''}）`).join('、'):'尚未绑定章节'}</small></div></div>`;}).join('')}<details class="analysis-evidence"><summary>查看生效的大纲原文、结局与约束</summary><pre class="outline-source">${esc(book.active.text)}</pre><p><strong>结局：</strong>${esc(book.active.ending)}</p><p><strong>不可改动：</strong>${esc(book.active.guardrails||'未另行填写')}</p></details></section>`:''}
+    <button class="button outline proposal-resume" id="proposal-resume" data-action="proposal-resume" hidden>继续核对上次的候选节点</button>
+    ${(book.draft_history||[]).length?`<section class="form-card proposal-history"><h2>大纲草稿历史</h2><p class="help">采用候选、恢复旧稿前保留原草稿，最近20份。恢复后仍需确认生效。</p>${[...book.draft_history].reverse().map(h=>`<div class="outline-history-row"><span>${esc(h.reason)} · ${date(h.at)} · ${h.draft.nodes.length} 个阶段</span><button class="text-button" data-action="out-restore-draft" data-id="${esc(h.id)}">恢复为草稿</button></div>`).join('')}</section>`:''}
     ${book.history.length?`<section class="form-card outline-history"><h2>大纲历史版本</h2><p class="help">保留最近20个生效旧版本。恢复只替换草稿，需要再次确认才会生效。</p>${[...book.history].reverse().map(h=>`<div class="outline-history-row"><span>v${h.version} · ${date(h.at)} · ${h.outline.nodes.length} 个阶段</span><button class="text-button" data-action="out-restore" data-version="${h.version}">恢复为草稿</button></div>`).join('')}</section>`:''}`;
 }
 
@@ -35,12 +37,14 @@ function decorateOutlineEntries(){
   if(state.view==='story'){
     $('.page-heading').insertAdjacentHTML('afterend',`<div class="outline-entry"><div><strong>整体走向在「全书大纲」确定</strong><p>${book.active?`当前以大纲 v${book.version} 的结局为准，下面的故事设想不会覆盖生效大纲。`:'这里记录故事定位和文风。请先确认全书大纲，再让模型逐章推进。'}</p></div><button class="button primary" data-action="view" data-view="outline">打开全书大纲 ${icon('arrow')}</button></div>`);
   }
-  if(state.view!=='write')return;
+  if(state.view!=='write'){window.decorateProposalEntries?.();return;}
   const c=current(),nodes=book.active?.nodes||[],node=nodes.find(n=>n.id===c.node_id);
-  $('.welcome').insertAdjacentHTML('afterend',`<div class="outline-entry ${!book.active||!node?'outline-warning':''}"><div><strong>${book.active?(node?`本章承接：${esc(node.title)}`:'本章尚未绑定大纲节点'):'先定全书大纲，再开始 AI 写作'}</strong><p>${book.active?(node?'遵守本阶段目标与禁区，后续节点不能提前兑现。':'在「场景方案」中选择阶段节点，确定本章要沿哪条主线推进。'):'粘贴你的大纲，确认阶段、必经事件和结局。模型会据此规划和写作。'}</p></div><button class="button outline small" data-action="view" data-view="outline">${book.active?'查看全书走向':'设置全书大纲'} ${icon('arrow')}</button></div>`);
+  $('.welcome').insertAdjacentHTML('afterend',`<div class="outline-entry ${!book.active||!node?'outline-warning':''}"><div><strong>${book.active?(node?`本章承接：${esc(node.title)}`:'本章尚未绑定大纲节点'):'先定全书大纲，再开始 AI 写作'}</strong><p>${book.active?(node?'遵守本阶段目标与禁区，后续节点不能提前兑现。':'在「场景方案」中选择阶段节点，确定本章要沿哪条主线推进。'):'粘贴你的大纲，确认阶段、必经事件和结局。模型会据此规划和写作。'}</p></div><button class="button outline small" data-action="${book.active&&!node?'out-bind-node':'view'}" data-view="outline">${book.active?(node?'查看全书走向':'选择本章阶段'):'设置全书大纲'} ${icon('arrow')}</button></div>`);
   const pane=$('[data-pane="outline"]');
   pane.insertAdjacentHTML('afterbegin',`<section class="chapter-outline-binding"><label class="field">本章承接的大纲节点<select id="chapter-node-id" ${!nodes.length?'disabled':''}><option value="">${nodes.length?'请选择本章阶段':'请先确认全书大纲'}</option>${c.node_id&&!node?`<option value="${esc(c.node_id)}" selected>原节点已变更，请重新选择</option>`:''}${nodes.map((n,i)=>`<option value="${esc(n.id)}" ${c.node_id===n.id?'selected':''}>${i+1}. ${esc(n.title)}</option>`).join('')}</select></label><div id="chapter-node-detail">${nodeDetailMarkup()}</div><label class="check-line"><input type="checkbox" id="chapter-completes-node" ${c.completes_node?'checked':''}>本章结束时完成这个阶段节点</label><label class="field">阶段完成依据（完成节点时必填）<textarea id="chapter-node-evidence" rows="2" maxlength="5000" placeholder="写完正文后，复制能够说明阶段目标已达成的原句。">${esc(c.node_evidence)}</textarea><small>不勾选完成，可以用多章推进同一阶段。确认完成后，下一章才能进入后续阶段。</small></label></section>`);
   if(state.sideTab==='memory'&&node)$('.context-body').insertAdjacentHTML('afterbegin',`<div class="section-label">全书大纲 v${book.version} · 当前节点</div>${nodeDetailMarkup()}`);
+  pane.insertAdjacentHTML('beforeend','<button class="button outline proposal-resume" id="proposal-resume" data-action="proposal-resume" hidden>继续核对上次的场景方案</button>');
+  window.decorateProposalEntries?.();
 }
 
 function captureChapterOutline(){
@@ -64,6 +68,7 @@ document.addEventListener('click',event=>{
   const button=event.target.closest('[data-action]');if(!button||state.busy||!button.dataset.action.startsWith('out-'))return;
   const {action,id,direction,version}=button.dataset;
   const draft=collectBookOutline();
+  if(action==='out-bind-node'){captureEditor();state.editorTab='outline';render();$('#chapter-node-id')?.focus();$('#chapter-node-id')?.scrollIntoView({block:'center',behavior:'smooth'});return;}
   if(action==='out-add-node'||action==='out-edit-node'){outlineNodeDialog(id);return;}
   if(action==='out-remove-node'){draft.nodes=draft.nodes.filter(n=>n.id!==id);markDirty();render();return;}
   if(action==='out-move-node'){const i=draft.nodes.findIndex(n=>n.id===id),j=i+Number(direction);if(i>=0&&j>=0&&j<draft.nodes.length){[draft.nodes[i],draft.nodes[j]]=[draft.nodes[j],draft.nodes[i]];markDirty();render();}return;}
@@ -78,9 +83,11 @@ document.addEventListener('click',event=>{
       await mutate('publish_book_outline',{});$('#dialog').close();render();toast('全书大纲已生效。请按顺序绑定并复核章节。');
     }else if(action==='out-split'){
       if(!state.settings.base_url||!state.settings.model)throw new Error('大纲草稿已保存。请先配置模型，也可以手动添加阶段节点。');
-      accept(await api(`/api/projects/${state.project.id}/outline-ai`,{revision:state.project.revision}));render();toast('已生成候选节点。请检查、修改后确认生效。');
+      await window.previewOutlineNodes();
     }else if(action==='out-restore'){
       await mutate('restore_book_outline',{version:Number(version)});render();toast('旧版大纲已恢复为草稿，尚未替换当前生效版本。');
+    }else if(action==='out-restore-draft'){
+      await mutate('restore_outline_draft',{history_id:id});render();toast('已恢复大纲草稿，当前生效走向保持原样。');
     }
   },action==='out-split'?'正在按你的大纲拆解阶段节点…':'正在保存大纲…');
 });
@@ -96,6 +103,7 @@ document.addEventListener('submit',event=>{
   const form=event.target,data=Object.fromEntries(new FormData(form)),draft=currentBookOutline().draft;
   if(!form.dataset.id&&draft.nodes.length>=30){toast('最多支持30个阶段节点。',true);return;}
   const node={...data,id:form.dataset.id||crypto.randomUUID()};
+  form.dataset.id=node.id;
   const index=draft.nodes.findIndex(n=>n.id===node.id);if(index<0)draft.nodes.push(node);else draft.nodes[index]=node;
-  markDirty();$('#dialog').close();render();
+  markDirty();run(async()=>{await saveCurrent();await window.workDrafts?.dialogSaved(form);$('#dialog').close();render();},'正在保存阶段节点…');
 });
