@@ -111,6 +111,39 @@ class ReferenceDomainTests(unittest.TestCase):
         self.assertEqual(new["base"]["goal"], "")
         self.assertEqual(new["base"]["appearance"], "深色外套")
 
+    def test_correction_history_is_bounded_and_keeps_independent_snapshots(self):
+        ref = self.add_character()
+        before_entities = copy.deepcopy(self.p["entities"])
+        original = copy.deepcopy(ref["analysis"])
+        for i in range(12):
+            novel.save_reference_analysis(self.p, ref["id"], character_result(), feedback=f"第{i + 1}次：保留蓝色外套，修正头发。")
+        self.assertEqual(len(ref["analysis_history"]), 10)
+        self.assertEqual(ref["analysis_history"][0]["analysis"]["feedback"], "第2次：保留蓝色外套，修正头发。")
+        self.assertEqual(ref["analysis_history"][-1]["analysis"]["feedback"], "第11次：保留蓝色外套，修正头发。")
+        self.assertTrue(all(entry["replaced_at"] for entry in ref["analysis_history"]))
+        ref["analysis"]["observations"]["appearance"] = "当前候选被编辑"
+        self.assertEqual(ref["analysis_history"][-1]["analysis"]["observations"]["appearance"], original["observations"]["appearance"])
+        context = novel.reference_context(self.p, ref, "现在修正表情")
+        context["reference_correction"]["previous_analysis"]["observations"]["appearance"] = "上下文被编辑"
+        self.assertEqual(ref["analysis"]["observations"]["appearance"], "当前候选被编辑")
+        self.assertEqual(self.p["entities"], before_entities)
+        self.assertEqual(self.p["chapters"][0]["status"], "approved")
+
+    def test_full_reanalysis_starts_new_feedback_chain_but_keeps_history(self):
+        ref = self.add_character()
+        first = copy.deepcopy(ref["analysis"])
+        novel.save_reference_analysis(self.p, ref["id"], character_result(), feedback="头发是长发，请保留衣着。")
+        context = novel.reference_context(self.p, ref, "表情更平静")
+        self.assertEqual(context["reference_correction"]["feedback_history"], ["头发是长发，请保留衣着。"])
+        self.assertEqual(ref["analysis_history"][0]["analysis"], first)
+        novel.save_reference_analysis(self.p, ref["id"], character_result())
+        self.assertNotIn("feedback", ref["analysis"])
+        self.assertEqual(len(ref["analysis_history"]), 2)
+        self.assertNotIn("reference_correction", novel.reference_context(self.p, ref))
+        context = novel.reference_context(self.p, ref, "从这版开始修正表情")
+        self.assertEqual(context["reference_correction"]["feedback_history"], [])
+        self.assertEqual(context["reference_correction"]["previous_analysis"], ref["analysis"])
+
     def test_locked_character_rejects_picture_changes(self):
         ref = self.add_character()
         hero = self.p["entities"][0]
@@ -158,6 +191,10 @@ class ReferenceHTTPTests(unittest.TestCase):
         _, raw = self.request(f"/api/projects/{self.pid}/mutate", {"revision": p["revision"], "action": "save_style_reference", "data": {"title": "示例", "text": "他放下杯子。窗外的雨还没停。"}})
         return json.loads(raw)["project"]
 
+    def analyze_image(self, p, **extra):
+        _, raw = self.request(f"/api/projects/{self.pid}/analyze-reference", {"revision": p["revision"], "id": p["references"][0]["id"], **extra})
+        return json.loads(raw)["project"]
+
     def test_style_analysis_then_apply(self):
         self.setup_provider()
         p = self.add_style()
@@ -183,6 +220,99 @@ class ReferenceHTTPTests(unittest.TestCase):
         parts = sent["messages"][1]["content"]
         self.assertEqual(parts[0]["type"], "text")
         self.assertEqual(parts[1]["image_url"]["url"], f"data:image/png;base64,{PNG}")
+
+    def test_corrections_send_original_image_previous_analysis_and_feedback_chain(self):
+        self.setup_provider()
+        p = self.analyze_image(self.upload_image())
+        original = copy.deepcopy(p)
+        first_feedback = "头发其实是长发，请保留蓝色外套和其他设定。"
+        p = self.analyze_image(p, feedback=first_feedback)
+        sent = support.ProviderHandler.requests[-1]
+        parts = sent["messages"][1]["content"]
+        payload = json.loads(parts[0]["text"])
+        self.assertEqual(parts[1]["image_url"]["url"], f"data:image/png;base64,{PNG}")
+        self.assertEqual(payload["author_instructions"], first_feedback)
+        correction = payload["context"]["reference_correction"]
+        self.assertEqual(correction["previous_analysis"], original["references"][0]["analysis"])
+        self.assertEqual(correction["feedback_history"], [])
+        self.assertEqual(p["references"][0]["analysis"]["feedback"], first_feedback)
+        self.assertEqual(p["references"][0]["analysis_history"][0]["analysis"], original["references"][0]["analysis"])
+        prior_analysis = copy.deepcopy(p["references"][0]["analysis"])
+        second_feedback = "嘴角应当略微上扬，之前对长发的修正继续保留。"
+        p = self.analyze_image(p, feedback=second_feedback)
+        payload = json.loads(support.ProviderHandler.requests[-1]["messages"][1]["content"][0]["text"])
+        self.assertEqual(payload["author_instructions"], second_feedback)
+        self.assertEqual(payload["context"]["reference_correction"]["previous_analysis"], prior_analysis)
+        self.assertEqual(payload["context"]["reference_correction"]["feedback_history"], [first_feedback])
+        self.assertEqual(len(p["references"][0]["analysis_history"]), 2)
+        self.assertEqual(p["entities"], original["entities"])
+        self.assertEqual(p["chapters"], original["chapters"])
+
+    def test_invalid_feedback_is_rejected_before_model_and_preserves_analysis(self):
+        self.setup_provider()
+        p = self.analyze_image(self.upload_image())
+        count = len(support.ProviderHandler.requests)
+        for feedback in ("", " \n\t", "长" * 5001, None, 42, ["长发"], {"appearance": "长发"}):
+            with self.subTest(feedback_type=type(feedback).__name__, length=len(feedback) if isinstance(feedback, str) else None):
+                with self.assertRaises(HTTPError) as cm:
+                    self.analyze_image(p, feedback=feedback)
+                self.assertEqual(cm.exception.code, 400)
+                self.assertEqual(self.server.store.get(self.pid), p)
+                self.assertEqual(len(support.ProviderHandler.requests), count)
+
+    def test_feedback_requires_existing_character_analysis(self):
+        self.setup_provider()
+        p = self.upload_image()
+        with self.assertRaises(HTTPError) as cm:
+            self.analyze_image(p, feedback="请把头发改成长发。")
+        self.assertEqual(cm.exception.code, 400)
+        self.assertEqual(self.server.store.get(self.pid), p)
+        self.assertEqual(support.ProviderHandler.requests, [])
+        p = self.add_style()
+        rid = p["references"][-1]["id"]
+        _, raw = self.request(f"/api/projects/{self.pid}/analyze-reference", {"revision": p["revision"], "id": rid})
+        p = json.loads(raw)["project"]
+        count = len(support.ProviderHandler.requests)
+        with self.assertRaises(HTTPError) as cm:
+            self.request(f"/api/projects/{self.pid}/analyze-reference", {"revision": p["revision"], "id": rid, "feedback": "改为长句。"})
+        self.assertEqual(cm.exception.code, 400)
+        self.assertEqual(self.server.store.get(self.pid), p)
+        self.assertEqual(len(support.ProviderHandler.requests), count)
+
+    def test_correction_model_errors_preserve_existing_analysis_and_history(self):
+        self.setup_provider()
+        p = self.analyze_image(self.upload_image())
+        p = self.analyze_image(p, feedback="头发是长发。")
+        for mode in ("bad", "length"):
+            support.ProviderHandler.mode = mode
+            with self.subTest(mode=mode), self.assertRaises(HTTPError) as cm:
+                self.analyze_image(p, feedback="再修正衣服的颜色。")
+            self.assertEqual(cm.exception.code, 400)
+            self.assertEqual(self.server.store.get(self.pid), p)
+
+    def test_stale_and_concurrent_corrections_preserve_existing_analysis_history(self):
+        self.setup_provider()
+        p = self.analyze_image(self.upload_image())
+        p = self.analyze_image(p, feedback="头发是长发。")
+        count = len(support.ProviderHandler.requests)
+        with self.assertRaises(HTTPError) as cm:
+            self.request(f"/api/projects/{self.pid}/analyze-reference", {"revision": p["revision"] - 1, "id": p["references"][0]["id"], "feedback": "修正表情。"})
+        self.assertEqual(cm.exception.code, 409)
+        self.assertEqual(self.server.store.get(self.pid), p)
+        self.assertEqual(len(support.ProviderHandler.requests), count)
+
+        def competing_call(*args, **kwargs):
+            self.server.store.update(self.pid, p["revision"], lambda current: current.update(title="另一窗口的修改"))
+            return character_result()
+
+        with patch("app.call_model", side_effect=competing_call):
+            with self.assertRaises(HTTPError) as cm:
+                self.analyze_image(p, feedback="修正表情。")
+        self.assertEqual(cm.exception.code, 409)
+        saved = self.server.store.get(self.pid)
+        self.assertEqual(saved["title"], "另一窗口的修改")
+        self.assertEqual(saved["references"], p["references"])
+        self.assertEqual(saved["entities"], p["entities"])
 
     def test_image_persists_and_backup_contains_bytes(self):
         p = self.upload_image()

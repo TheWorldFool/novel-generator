@@ -421,16 +421,39 @@ def add_image_reference(p, ref):
     p["references"].append(ref)
 
 
-def reference_context(p, ref):
+def reference_feedback(ref, feedback):
+    if feedback is None:
+        return None
+    feedback = bounded_string(feedback, 5000).strip()
+    if not feedback:
+        raise StoryError("请先指出读图结果哪里不准确，以及希望怎样修正。")
+    if ref["kind"] != "character" or not ref.get("analysis"):
+        raise StoryError("请先完成一次人物读图分析，再提出修正意见。")
+    return feedback
+
+
+def reference_context(p, ref, feedback=None):
+    feedback = reference_feedback(ref, feedback)
     if ref["kind"] == "style":
         return {"reference_kind": "style", "reference": {key: ref[key] for key in ("title", "text", "notes")}, "style_fields": list(STYLE_FIELDS)}
     existing = next((e for e in p["entities"] if e["id"] == ref.get("entity_id")), None)
-    return {"reference_kind": "character", "reference_title": ref["title"], "author_notes": ref["notes"],
+    context = {"reference_kind": "character", "reference_title": ref["title"], "author_notes": ref["notes"],
             "genre": p["brief"]["genre"], "premise": p["brief"]["premise"], "existing_character": existing, "fields": FIELDS["character"]}
+    if feedback is not None:
+        # A full re-analysis starts a fresh correction chain, while old analyses remain available for review.
+        previous = [entry["analysis"] for entry in ref.get("analysis_history", [])] + [ref["analysis"]]
+        history = []
+        for analysis in reversed(previous):
+            if not analysis.get("feedback"):
+                break
+            history.append(analysis["feedback"])
+        context["reference_correction"] = {"previous_analysis": copy.deepcopy(ref["analysis"]), "feedback_history": list(reversed(history))}
+    return context
 
 
-def save_reference_analysis(p, rid, result):
+def save_reference_analysis(p, rid, result, feedback=None):
     ref = get_reference(p, rid)
+    feedback = reference_feedback(ref, feedback)
     if not isinstance(result, dict):
         raise StoryError("模型没有返回有效的分析对象，原有设定已保留。")
     if ref["kind"] == "style":
@@ -466,8 +489,15 @@ def save_reference_analysis(p, rid, result):
         # Appearance is grounded in the explicitly separated observations, not invented biography.
         analysis["character"]["base"]["appearance"] = "\n".join(f"{label}：{visible[key]}" for key, label in (("appearance", "外貌"), ("clothing", "衣着"), ("posture", "姿态"), ("expression", "表情")) if visible[key])
     analysis["at"] = now()
+    if ref["kind"] == "character":
+        if feedback is not None:
+            analysis["feedback"] = feedback
+        if ref.get("analysis"):
+            history = list(ref.get("analysis_history", []))
+            history.append({"analysis": copy.deepcopy(ref["analysis"]), "replaced_at": analysis["at"]})
+            ref["analysis_history"] = history[-10:]
     ref["analysis"] = analysis
-    log(p, f"「{ref['title']}」分析完成，等待作者选择采用。")
+    log(p, f"「{ref['title']}」{'按反馈修正' if feedback is not None else '分析'}完成，等待作者选择采用。")
 
 
 def apply_ai(p, cid, action, result):

@@ -49,9 +49,12 @@ def main():
     if os.name != "nt" or not gradle.exists():
         gradle = ROOT / "android" / ("gradlew.bat" if os.name == "nt" else "gradlew")
     subprocess.run([str(gradle), "--no-daemon", "assembleRelease", "lintRelease"], cwd=ROOT / "android", env=env, check=True)
-    output = ROOT / "dist/novel-generator-0.2.0-android.apk"
+    apk_directory = ROOT / "android/app/build/outputs/apk/release"
+    metadata = json.loads((apk_directory / "output-metadata.json").read_text(encoding="utf-8"))
+    version = metadata["elements"][0]["versionName"]
+    output = ROOT / f"dist/novel-generator-{version}-android.apk"
     output.parent.mkdir(exist_ok=True)
-    shutil.copy2(ROOT / "android/app/build/outputs/apk/release/app-release.apk", output)
+    shutil.copy2(apk_directory / "app-release.apk", output)
     digest = hashlib.sha256(output.read_bytes()).hexdigest()
     output.with_suffix(".apk.sha256").write_text(digest + "  " + output.name + "\n", encoding="ascii")
     print("APK: " + str(output))

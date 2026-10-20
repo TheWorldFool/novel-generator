@@ -6,6 +6,32 @@ const observationLabels = {appearance:'外貌', clothing:'衣着与配饰', post
 let referenceTab = 'style';
 let pendingReferenceImage = null;
 let imageSelectionVersion = 0;
+const referenceFeedbackDrafts = new Map();
+const characterReferenceDrafts = new Map();
+
+const referenceDraftKey = id => `${state.project.id}:${id}`;
+
+function rememberCharacterReferenceDraft(id) {
+  const form=$('#apply-character-reference-form');
+  if(!form || form.dataset.id!==id || form.dataset.project!==state.project.id || !form.referenceCandidateValues) return;
+  const initial=form.referenceCandidateValues, values={};
+  for(const input of $$('[name^="value-"]',form)) {
+    const key=input.name.slice(6);
+    if(input.value!==(initial[key]||'')) values[key]=input.value;
+  }
+  const selected=$$('[name="fields"]:checked',form).map(input=>input.value);
+  const draft={values,selected};
+  if(form.elements.name.value!==initial.name) draft.name=form.elements.name.value;
+  if(form.elements.entity_id.value!==initial.entity_id) draft.entity_id=form.elements.entity_id.value;
+  draft.modified=Object.keys(values).length>0 || 'name' in draft || 'entity_id' in draft || selected.length!==1 || selected[0]!=='appearance';
+  characterReferenceDrafts.set(referenceDraftKey(id),draft);
+}
+
+function referenceFeedbackSection(r) {
+  const feedback=referenceFeedbackDrafts.get(referenceDraftKey(r.id))||'';
+  const history=(r.analysis_history||[]).slice().reverse();
+  return `<section class="reference-feedback" aria-labelledby="reference-feedback-heading"><h3 id="reference-feedback-heading">有不准确的地方？指出问题并修正。</h3><p class="help">说明哪里看错、应该是什么，以及哪些内容需要保留。模型会结合原图、上一轮分析和你的纠正继续修改。</p>${r.analysis.feedback?`<details class="reference-last-feedback"><summary>查看上次纠正意见</summary><p>${esc(r.analysis.feedback)}</p></details>`:''}<label class="field">这次需要纠正什么？<textarea name="feedback" id="reference-feedback-input" rows="3" maxlength="5000" placeholder="例如：眼睛是蓝色，不是黑色；手里拿的是书，不是手机。请只修正这两处，保留发型和衣着描述。">${esc(feedback)}</textarea><small>最多5000字符。修正结果仍需核对并选择采用。</small></label><button type="button" class="button primary" data-action="ref-correct" data-id="${r.id}">${icon('spark')}按我的意见修正</button>${history.length?`<details class="reference-analysis-history"><summary>查看先前分析（${history.length}）</summary>${history.map(entry=>`<article><strong>${date(entry.analysis?.at||entry.replaced_at)}</strong><p>${entry.analysis?.feedback?'本轮纠正：'+esc(entry.analysis.feedback):'从原图开始的分析'}</p>${Object.entries(observationLabels).map(([key,label])=>`<p><span>${label}：</span>${esc(entry.analysis?.observations?.[key]||'未明确观察到')}</p>`).join('')}</article>`).join('')}</details>`:''}</section>`;
+}
 
 function referenceImageURL(id) {
   return `/api/projects/${state.project.id}/references/${id}/image`;
@@ -48,7 +74,8 @@ function renderReferences() {
 
 function referenceCard(r) {
   const entity = state.project.entities.find(e=>e.id===r.entity_id);
-  return `<article class="reference-card">${r.kind==='character'?`<button class="reference-cover" data-action="ref-preview" data-id="${r.id}" aria-label="查看${esc(r.title)}"><img src="${referenceImageURL(r.id)}" alt="${esc(r.title)}" loading="lazy"></button>`:''}<div class="reference-card-content"><div class="reference-card-heading"><h2>${esc(r.title)}</h2><span class="badge ${r.analysis?'approved':'draft'}">${r.analysis?'已分析':'未分析'}</span></div>${r.kind==='style'?`<blockquote class="reference-excerpt">${esc(r.text.slice(0,170))}${r.text.length>170?'…':''}</blockquote><small class="muted">${r.text.length.toLocaleString()} 字符 · 分析时读取完整材料</small>`:`<small class="muted">${Math.ceil(r.size/1024)} KB · ${entity?'关联 '+esc(entity.name):'尚未关联人物'}</small>`}${r.notes?`<p class="reference-notes">参考重点：${esc(r.notes)}</p>`:''}${r.applied_at?`<p class="source">曾于 ${date(r.applied_at)} 采用分析结果</p>`:''}<div class="reference-actions"><button class="button primary small" data-action="ref-analyze" data-id="${r.id}">${icon('spark')}${r.analysis?'重新分析':r.kind==='style'?'分析文风':'读图分析'}</button><button class="button outline small" data-action="ref-preview" data-id="${r.id}">${r.analysis?'审阅与采用':'查看材料'}</button>${r.kind==='style'?`<button class="text-button" data-action="ref-edit-style" data-id="${r.id}">编辑</button>`:''}</div>${r.kind==='style'?`<label class="reference-activate"><input type="checkbox" data-reference-active="${r.id}" ${r.active?'checked':''}>启用为写作样例${r.active&&state.project.style_reference_mode==='card'?'<small>当前仅用文风卡，原文暂不发送</small>':''}</label>`:''}</div></article>`;
+  const canCorrect=r.kind==='character'&&r.analysis;
+  return `<article class="reference-card">${r.kind==='character'?`<button class="reference-cover" data-action="ref-preview" data-id="${r.id}" aria-label="查看${esc(r.title)}"><img src="${referenceImageURL(r.id)}" alt="${esc(r.title)}" loading="lazy"></button>`:''}<div class="reference-card-content"><div class="reference-card-heading"><h2>${esc(r.title)}</h2><span class="badge ${r.analysis?'approved':'draft'}">${r.analysis?'已分析':'未分析'}</span></div>${r.kind==='style'?`<blockquote class="reference-excerpt">${esc(r.text.slice(0,170))}${r.text.length>170?'…':''}</blockquote><small class="muted">${r.text.length.toLocaleString()} 字符 · 分析时读取完整材料</small>`:`<small class="muted">${Math.ceil(r.size/1024)} KB · ${entity?'关联 '+esc(entity.name):'尚未关联人物'}</small>`}${r.notes?`<p class="reference-notes">参考重点：${esc(r.notes)}</p>`:''}${r.applied_at?`<p class="source">曾于 ${date(r.applied_at)} 采用分析结果</p>`:''}<div class="reference-actions"><button class="button primary small" data-action="${canCorrect?'ref-feedback':'ref-analyze'}" data-id="${r.id}">${icon('spark')}${canCorrect?'指出问题并修正':r.analysis?'重新分析':r.kind==='style'?'分析文风':'读图分析'}</button><button class="button outline small" data-action="ref-preview" data-id="${r.id}">${r.analysis?'审阅与采用':'查看材料'}</button>${r.kind==='style'?`<button class="text-button" data-action="ref-edit-style" data-id="${r.id}">编辑</button>`:canCorrect?`<button class="text-button" data-action="ref-reanalyze" data-id="${r.id}">完全重新分析</button>`:''}</div>${r.kind==='style'?`<label class="reference-activate"><input type="checkbox" data-reference-active="${r.id}" ${r.active?'checked':''}>启用为写作样例${r.active&&state.project.style_reference_mode==='card'?'<small>当前仅用文风卡，原文暂不发送</small>':''}</label>`:''}</div></article>`;
 }
 
 function styleReferenceDialog(id) {
@@ -86,17 +113,50 @@ function referencePreview(id) {
   if(r.kind==='style') {
     showDialog(`<form id="apply-style-reference-form" data-id="${r.id}"><div class="eyebrow green">REVIEW BEFORE APPLYING</div><h2>从「${esc(r.title)}」提炼的文风</h2><p class="help">${esc(a.overview)}</p><div class="notice">勾选的维度将替换当前文风卡的对应内容。原文样例是否参与写作，需要另行启用。</div>${Object.entries(referenceStyleLabels).map(([key,label])=>`<div class="reference-field"><label class="check-line"><input type="checkbox" name="fields" value="${key}" checked>${label}</label><textarea name="value-${key}" rows="3" maxlength="5000" aria-label="${label}">${esc(a.style[key])}</textarea></div>`).join('')}<details class="analysis-evidence"><summary>查看分析的原文依据（${a.evidence.length}）</summary>${a.evidence.map(e=>`<blockquote>${esc(e.quote)}</blockquote><p class="help">${esc(e.observation)}</p>${e.verified?'':'<small class="warning-text">此引文未在参考文本找到，请核对这条分析。</small>'}`).join('')}</details><div class="dialog-actions"><button type="button" class="button subtle" data-action="close-dialog">先保留分析</button><button class="button primary" type="submit">采用勾选的文风规则</button></div></form>`);return;
   }
-  const c=a.character;
-  showDialog(`<form id="apply-character-reference-form" data-id="${r.id}"><div class="eyebrow green">OBSERVE, THEN IMAGINE</div><h2>先看见，再设定。</h2><div class="image-analysis-intro"><img src="${referenceImageURL(r.id)}" alt="${esc(r.title)}"><div><h3>图中可见特征 · 待你核对</h3>${Object.entries(observationLabels).map(([key,label])=>`<p><strong>${label}：</strong>${esc(a.observations[key]||'未明确观察到')}</p>`).join('')}</div></div>${a.uncertainties.length?`<div class="notice amber">${a.uncertainties.map(esc).join('<br>')}</div>`:''}<label class="field">应用到哪个人物？<select name="entity_id"><option value="">建立新人物</option>${state.project.entities.filter(e=>e.kind==='character').map(e=>`<option value="${e.id}" ${e.id===r.entity_id?'selected':''}>${esc(e.name)}${e.locked?'（已锁定）':''}</option>`).join('')}</select></label><label class="field">新人物名称（选择已有角色时不改名）<input name="name" value="${esc(c.name)}" maxlength="100"></label><div class="notice">默认只采用可见特征。下方小传、目标、经历与关系均为虚构创作建议，请按需要勾选。修改已有基础档案会触发章节复核。</div><div class="reference-field"><label class="check-line"><input type="checkbox" name="fields" value="appearance" checked>采用外貌与衣着（根据图片观察整理）</label><textarea name="value-appearance" rows="5" maxlength="5000" aria-label="采用的外貌与衣着">${esc(c.base.appearance)}</textarea></div><div class="reference-field"><label class="check-line"><input type="checkbox" name="fields" value="description">采用虚构人物小传</label><textarea name="value-description" rows="4" maxlength="5000" aria-label="虚构人物小传">${esc(c.description)}</textarea></div><details class="analysis-evidence"><summary>展开更多虚构初始设定建议</summary>${Object.entries(state.fields.character).filter(([key])=>key!=='appearance').map(([key,label])=>`<div class="reference-field"><label class="check-line"><input type="checkbox" name="fields" value="${key}">采用${label}建议</label><textarea name="value-${key}" rows="2" maxlength="5000" aria-label="${label}建议">${esc(c.base[key]||'')}</textarea></div>`).join('')}</details><div class="dialog-actions"><button type="button" class="button subtle" data-action="close-dialog">先保留分析</button><button class="button primary" type="submit">采用勾选的人物设定</button></div></form>`);
+  rememberCharacterReferenceDraft(id);
+  const c=a.character, draft=characterReferenceDrafts.get(referenceDraftKey(id));
+  const entityId=draft&&'entity_id' in draft?draft.entity_id:r.entity_id;
+  const value=key=>esc(draft&&key in draft.values?draft.values[key]:key==='description'?c.description:c.base[key]||'');
+  const selected=key=>(draft?draft.selected.includes(key):key==='appearance')?'checked':'';
+  showDialog(`<form id="apply-character-reference-form" data-id="${r.id}" data-project="${state.project.id}">
+    <div class="eyebrow green">OBSERVE, THEN IMAGINE</div><h2>先看见，再设定。</h2>
+    <div class="image-analysis-intro"><img src="${referenceImageURL(r.id)}" alt="${esc(r.title)}"><div><h3>图中可见特征 · 待你核对</h3>${Object.entries(observationLabels).map(([key,label])=>`<p><strong>${label}：</strong>${esc(a.observations[key]||'未明确观察到')}</p>`).join('')}</div></div>
+    ${a.uncertainties.length?`<div class="notice amber">${a.uncertainties.map(esc).join('<br>')}</div>`:''}
+    ${referenceFeedbackSection(r)}
+    <h3 class="reference-adoption-heading">核对本轮建议，再选择采用</h3>
+    ${draft?.modified?`<div class="notice reference-draft-notice">你手动编辑的采用内容和勾选已保留，未编辑的建议会随分析更新。<button type="button" class="text-button" data-action="ref-reset-draft" data-id="${r.id}">恢复本轮分析的全部建议</button></div>`:''}
+    <label class="field">应用到哪个人物？<select name="entity_id"><option value="">建立新人物</option>${state.project.entities.filter(e=>e.kind==='character').map(e=>`<option value="${e.id}" ${e.id===entityId?'selected':''}>${esc(e.name)}${e.locked?'（已锁定）':''}</option>`).join('')}</select></label>
+    <label class="field">新人物名称（选择已有角色时不改名）<input name="name" value="${esc(draft&&'name' in draft?draft.name:c.name)}" maxlength="100"></label>
+    <div class="notice">默认只采用可见特征。下方小传、目标、经历与关系均为虚构创作建议，请按需要勾选。修改已有基础档案会触发章节复核。</div>
+    <div class="reference-field"><label class="check-line"><input type="checkbox" name="fields" value="appearance" ${selected('appearance')}>采用外貌与衣着（根据图片观察整理）</label><textarea name="value-appearance" rows="5" maxlength="5000" aria-label="采用的外貌与衣着">${value('appearance')}</textarea></div>
+    <div class="reference-field"><label class="check-line"><input type="checkbox" name="fields" value="description" ${selected('description')}>采用虚构人物小传</label><textarea name="value-description" rows="4" maxlength="5000" aria-label="虚构人物小传">${value('description')}</textarea></div>
+    <details class="analysis-evidence"><summary>展开更多虚构初始设定建议</summary>${Object.entries(state.fields.character).filter(([key])=>key!=='appearance').map(([key,label])=>`<div class="reference-field"><label class="check-line"><input type="checkbox" name="fields" value="${key}" ${selected(key)}>采用${label}建议</label><textarea name="value-${key}" rows="2" maxlength="5000" aria-label="${label}建议">${value(key)}</textarea></div>`).join('')}</details>
+    <div class="reference-analysis-tools"><button type="button" class="text-button" data-action="ref-reanalyze" data-id="${r.id}">完全重新分析原图</button><small>从原图与参考重点开始，不沿用纠正意见。</small></div>
+    <div class="dialog-actions"><button type="button" class="button subtle" data-action="close-dialog">先保留分析</button><button class="button primary" type="submit">采用勾选的人物设定</button></div></form>`);
+  $('#apply-character-reference-form').referenceCandidateValues={...c.base,description:c.description,name:c.name,entity_id:r.entity_id||''};
 }
 
-async function analyzeReference(id) {
+async function analyzeReference(id, feedback, feedbackAtSubmit) {
   const r=state.project.references.find(r=>r.id===id);
   const model=r.kind==='character'?(state.settings.vision_model||state.settings.model):state.settings.model;
   if(!state.settings.base_url||!model) throw new Error('参考材料已保存。请先在「模型设置」配置模型；读图需要支持图片输入的模型。');
-  accept(await api(`/api/projects/${state.project.id}/analyze-reference`, {revision:state.project.revision,id}));
+  rememberCharacterReferenceDraft(id);
+  const payload={revision:state.project.revision,id};
+  if(feedback!==undefined) payload.feedback=feedback;
+  const activeForm=$('#apply-character-reference-form');
+  const feedbackInput=activeForm?.dataset.id===id?$('#apply-character-reference-form [name="feedback"]'):null;
+  const submittedFeedback=feedbackAtSubmit===undefined?feedbackInput?.value:feedbackAtSubmit;
+  accept(await api(`/api/projects/${state.project.id}/analyze-reference`, payload));
+  // The dialog remains editable while the request is running. Only clear the
+  // submitted text; any new feedback belongs to the next correction round.
+  if(feedbackInput && feedbackInput.value!==submittedFeedback) {
+    referenceFeedbackDrafts.set(referenceDraftKey(id),feedbackInput.value);
+  } else {
+    referenceFeedbackDrafts.delete(referenceDraftKey(id));
+    if(feedbackInput)feedbackInput.value='';
+  }
   render();referencePreview(id);
-  toast('分析已保存。请选择要采用的部分，现有设定还没有改变。');
+  toast(feedback!==undefined?'已按你的意见修正。请核对本轮建议，再选择采用。':'分析已保存。请选择要采用的部分，现有设定还没有改变。');
 }
 
 document.addEventListener('click',event=>{
@@ -107,11 +167,47 @@ document.addEventListener('click',event=>{
   if(action==='ref-new-style'||action==='ref-edit-style'){styleReferenceDialog(id);return;}
   if(action==='ref-upload'){imageReferenceDialog(entity);return;}
   if(action==='ref-preview'){referencePreview(id);return;}
+  if(action==='ref-feedback') {
+    referencePreview(id);
+    const input=$('#reference-feedback-input');
+    input?.scrollIntoView({block:'center'});input?.focus({preventScroll:true});return;
+  }
+  if(action==='ref-reset-draft') {
+    const form=$('#apply-character-reference-form');
+    if(form)form.referenceCandidateValues=null;
+    characterReferenceDrafts.delete(referenceDraftKey(id));referencePreview(id);return;
+  }
+  if(action==='ref-correct') {
+    const input=$('#reference-feedback-input'), rawFeedback=input?.value||'', feedback=rawFeedback.trim();
+    if(!feedback || feedback.length>5000) {toast('请填写具体的纠正意见，最多5000字符。',true);input?.focus();return;}
+    referenceFeedbackDrafts.set(referenceDraftKey(id),input.value);
+    rememberCharacterReferenceDraft(id);
+    run(async()=>{await saveCurrent();await analyzeReference(id,feedback,rawFeedback);},'正在根据你的意见修正人物分析…');return;
+  }
+  if(action==='ref-reanalyze') {
+    rememberCharacterReferenceDraft(id);
+    showDialog(`<div class="eyebrow green">START FROM THE IMAGE</div><h2>完全重新分析这张图片？</h2><p>模型将从原图和参考重点重新开始，本轮不沿用之前的纠正意见。旧结果会保留在分析历史中，手动编辑的采用内容也会保留。</p><div class="dialog-actions"><button type="button" class="button subtle" data-action="ref-preview" data-id="${id}">返回审阅</button><button type="button" class="button primary" data-action="ref-reanalyze-confirm" data-id="${id}">完全重新分析</button></div>`);return;
+  }
+  if(action==='ref-reanalyze-confirm') {
+    run(async()=>{await saveCurrent();try{await analyzeReference(id);}catch(error){referencePreview(id);throw error;}},'正在从原图重新分析…');return;
+  }
   if(action==='ref-open') {run(async()=>{await saveCurrent();referenceTab=tab||'style';state.view='references';render();});return;}
   if(action==='ref-analyze') {run(async()=>{await saveCurrent();await analyzeReference(id);},'正在分析参考材料，请稍候…');}
 });
 
+document.addEventListener('input',event=>{
+  if(event.target.id==='reference-feedback-input') {
+    const form=event.target.closest('#apply-character-reference-form');
+    if(form)referenceFeedbackDrafts.set(referenceDraftKey(form.dataset.id),event.target.value);
+    return;
+  }
+  const form=event.target.closest('#apply-character-reference-form');
+  if(form)rememberCharacterReferenceDraft(form.dataset.id);
+});
+
 document.addEventListener('change',event=>{
+  const characterForm=event.target.closest('#apply-character-reference-form');
+  if(characterForm)rememberCharacterReferenceDraft(characterForm.dataset.id);
   if(event.target.id==='reference-image-file')chooseReferenceImage(event.target.files[0]).catch(err=>toast(err.message,true));
   if(event.target.id==='style-reference-file') {
     const file=event.target.files[0], form=$('#style-reference-form');
@@ -168,6 +264,7 @@ document.addEventListener('submit',event=>{
       const fields=fd.getAll('fields');
       const values=Object.fromEntries(fields.map(key=>[key,data['value-'+key]]));
       await mutate(form.id==='apply-style-reference-form'?'apply_style_analysis':'apply_character_reference',{id,fields,values,entity_id:data.entity_id,name:data.name});
+      if(form.id==='apply-character-reference-form')characterReferenceDrafts.delete(referenceDraftKey(id));
       $('#dialog').close();render();toast('已采用勾选的设定。未勾选的建议仍保留在参考分析中。');
     }
   },mode==='analyze'?'正在保存并分析参考材料…':'正在保存…');

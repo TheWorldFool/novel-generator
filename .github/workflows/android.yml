@@ -29,7 +29,7 @@ jobs:
       - name: Test shared logic and autosave
         run: |
           python -m unittest discover -s tests -v
-          node --test tests/mobile_autosave.test.js
+          node --test tests/*.test.js
           node --check static/app.js
       - name: Build Android preview and run lint
         working-directory: android
