@@ -114,7 +114,11 @@ function currentSaveOperation() {
 async function saveCurrent() {
   if (!state.dirty) return;
   const operation = currentSaveOperation();
-  if(operation) await mutate(...operation);
+  if(operation) {
+    const projectId = state.project.id;
+    await mutate(...operation);
+    window.mobileSaveSucceeded?.({projectId,revision:state.project.revision});
+  }
 }
 
 function canonicalBefore() {
@@ -156,7 +160,9 @@ function render() {
   window.decorateBackup?.();
   window.decorateMemory?.();
   window.decorateRevisions?.();
+  window.decorateChapters?.();
   if ($('#rewrite-instructions')) $('#rewrite-instructions').value = state.rewriteNotes[current().id] || '';
+  window.decorateRewriteNotes?.();
 }
 
 function renderWrite() {
@@ -257,6 +263,7 @@ function updateChangeFields() {
 
 async function aiAction(action, instructions='') {
   if(action==='plan') return window.previewScenePlan(instructions);
+  if(action==='rewrite') return window.previewChapterRewrite(instructions);
   await saveCurrent();
   if (!state.settings.model || !state.settings.base_url) {
     state.view = 'settings'; render();
@@ -275,7 +282,7 @@ document.addEventListener('click', event => {
   const button = event.target.closest('[data-action]');
   if (!button || state.busy) return;
   const {action, id, view, tab, task, kind} = button.dataset;
-  if (['ref-','out-','local-edit-','backup-','draft-','proposal-','memory-','revisions-'].some(prefix=>action.startsWith(prefix))) return;
+  if (['ref-','out-','local-edit-','backup-','draft-','proposal-','memory-','revisions-','chapter-'].some(prefix=>action.startsWith(prefix))) return;
   if (action==='close-dialog') { if(window.workDrafts) window.workDrafts.requestClose(); else $('#dialog').close(); return; }
   if (action==='editor-tab') {
     captureEditor(); state.editorTab=tab; render(); return;
@@ -298,7 +305,7 @@ document.addEventListener('click', event => {
     await saveCurrent();
     render();
     const c=current();
-    showDialog(`<div class="eyebrow green">AUTHOR'S APPROVAL</div><h2>把这一章写进正式记忆。</h2><p>《${esc(c.title)}》 · ${count(c.text)} 字</p><div class="note-card"><strong>章节摘要</strong><p>${esc(c.summary||'尚未填写摘要，请先在「章节记忆」中补充。')}</p></div><p>本次将写入 <strong>${c.changes.filter(x=>x.selected).length}</strong> 项勾选的状态变化。未勾选的建议不会生效。</p>${c.local_edit_review_required?'<label class="check-line"><input type="checkbox" id="approve-local-edit-checked">我已核对正文修改后的章节摘要，并重新检查需要记录的状态变化。</label>':''}<p class="help">如果前文仍有未确认章节，请先完成前文。修改已确认内容会使后续章节进入待复核。</p><div class="dialog-actions"><button class="button subtle" data-action="close-dialog">继续检查</button><button class="button primary" data-action="confirm-approve">确认入库</button></div>`); decorateOutlineApproval(); return;
+    showDialog(`<div class="eyebrow green">AUTHOR'S APPROVAL</div><h2>把这一章写进正式记忆。</h2><p>《${esc(c.title)}》 · ${count(c.text)} 字</p><div class="note-card"><strong>章节摘要</strong><p>${esc(c.summary||'尚未填写摘要，请先在「章节记忆」中补充。')}</p></div><p>本次将写入 <strong>${c.changes.filter(x=>x.selected).length}</strong> 项勾选的状态变化。未勾选的建议不会生效。</p>${c.local_edit_review_required?'<label class="check-line"><input type="checkbox" id="approve-local-edit-checked">我已核对正文或章节顺序变化后的章节摘要，并重新检查需要记录的状态变化。</label>':''}<p class="help">如果前文仍有未确认章节，请先完成前文。修改已确认内容会使后续章节进入待复核。</p><div class="dialog-actions"><button class="button subtle" data-action="close-dialog">继续检查</button><button class="button primary" data-action="confirm-approve">确认入库</button></div>`); decorateOutlineApproval(); return;
     });
     return;
   }
@@ -339,7 +346,7 @@ document.addEventListener('click', event => {
 });
 
 document.addEventListener('input', event => {
-  if(event.target.id==='rewrite-instructions') {state.rewriteNotes[current().id]=event.target.value;return;}
+  if(event.target.id==='rewrite-instructions') {state.rewriteNotes[current().id]=event.target.value;window.captureRewriteNotes?.(event.target.value);return;}
   if(event.target.closest('#dialog') || event.target.closest('#settings-form') || event.target.id==='rewrite-instructions') return;
   if(event.target.matches('textarea, input') && ['write','story'].includes(state.view)) {
     markDirty();

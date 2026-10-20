@@ -121,6 +121,40 @@ public class RuntimeSmokeTest {
         assertTrue(chapter.getBoolean("local_edit_review_required"));
     }
 
+    @Test public void chapterTrashSurvivesBackupAndCanRestoreOriginalProse() throws Exception {
+        assertTrue(request("/chapters.js", null).contains("decorateChapters"));
+        assertTrue(request("/rewrite-notes.js", null).contains("captureRewriteNotes"));
+        JSONObject book = new JSONObject(request("/api/projects", new JSONObject().put("title", "章节回收站测试"))).getJSONObject("project");
+        String path = "/api/projects/" + book.getString("id");
+        JSONObject first = book.getJSONArray("chapters").getJSONObject(0);
+        String chapterId = first.getString("id");
+        book = new JSONObject(request(path + "/mutate", new JSONObject().put("revision", book.getInt("revision"))
+                .put("action", "save_chapter").put("data", new JSONObject().put("id", chapterId)
+                        .put("text", "门外的雨停了。").put("summary", "雨停。")))).getJSONObject("project");
+        book = new JSONObject(request(path + "/mutate", new JSONObject().put("revision", book.getInt("revision"))
+                .put("action", "insert_chapter").put("data", new JSONObject().put("id", chapterId)
+                        .put("position", "after").put("title", "下一章")))).getJSONObject("project");
+        book = new JSONObject(request(path + "/mutate", new JSONObject().put("revision", book.getInt("revision"))
+                .put("action", "delete_chapter").put("data", new JSONObject().put("id", chapterId)
+                        .put("confirm_title", first.getString("title"))))).getJSONObject("project");
+        assertEquals(1, book.getJSONArray("chapters").length());
+        JSONObject trash = book.getJSONArray("chapter_trash").getJSONObject(0);
+        assertEquals("门外的雨停了。", trash.getJSONObject("chapter").getString("text"));
+        JSONObject backup = new JSONObject(request(path + "/backup", null));
+        JSONObject preview = new JSONObject(request("/api/backups/preview", backup)).getJSONObject("preview");
+        assertEquals(1, preview.getInt("trashed_chapter_count"));
+        JSONObject imported = new JSONObject(request("/api/backups/import", backup)).getJSONObject("project");
+        String importedPath = "/api/projects/" + imported.getString("id");
+        JSONObject restored = new JSONObject(request(importedPath + "/mutate", new JSONObject().put("revision", imported.getInt("revision"))
+                .put("action", "restore_chapter").put("data", new JSONObject().put("trash_id", trash.getString("id"))))).getJSONObject("project");
+        assertEquals(2, restored.getJSONArray("chapters").length());
+        assertEquals(0, restored.getJSONArray("chapter_trash").length());
+        JSONObject original = restored.getJSONArray("chapters").getJSONObject(0);
+        assertEquals(chapterId, original.getString("id"));
+        assertEquals("门外的雨停了。", original.getString("text"));
+        assertNotEquals("approved", original.getString("status"));
+    }
+
     @Test public void nativeActivityStartsWithTheEmbeddedRuntime() throws Exception {
         application().runtime.get(60, TimeUnit.SECONDS);
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();

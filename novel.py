@@ -31,6 +31,7 @@ EDIT_SNAPSHOT_WINDOW = dt.timedelta(minutes=5)
 SNAPSHOT_FIELDS = ("text", "title", "summary", "outline", "intent", "cast", "changes", "accepted_changes",
                    "accepted_text", "accepted_summary", "node_id", "completes_node", "node_evidence",
                    "outline_checked_version", "local_edit_review_required")
+CHAPTER_TRASH_LIMIT = 30
 
 
 def upgrade(p):
@@ -41,7 +42,8 @@ def upgrade(p):
         if entity["kind"] == "character":
             entity["base"].setdefault("appearance", "")
     story_outline.ensure(p)
-    for c in p["chapters"]:
+    p.setdefault("chapter_trash", [])
+    for c in p["chapters"] + [entry["chapter"] for entry in p["chapter_trash"]]:
         c.setdefault("local_edit_review_required", False)
     return p
 
@@ -59,7 +61,7 @@ def new_project(title="未命名小说"):
             "style": {"perspective": "第三人称限知视角", "rhythm": "长短句交替，冲突处收紧节奏", "dialogue": "用行动和潜台词表现关系",
                       "description": "描写服务于人物感受与情节", "avoid": "避免套话、重复解释和无意义的感叹", "sample": ""},
             "style_reference_mode": "card", "references": [], "book_outline": story_outline.empty(),
-            "entities": [], "chapters": [chapter("第一章")], "events": []}
+            "entities": [], "chapters": [chapter("第一章")], "chapter_trash": [], "events": []}
 
 
 def demo_project():
@@ -203,7 +205,7 @@ def approve(p, cid, outline_checked=False, local_edit_checked=False):
     if not c["summary"].strip():
         raise StoryError("请先填写章节摘要，供后续章节检索。")
     if c.get("local_edit_review_required") and not local_edit_checked:
-        raise StoryError("正文修改或恢复后，请先核对章节摘要与状态变化，再勾选确认。")
+        raise StoryError("正文或章节顺序变化、恢复后，请先核对章节摘要与状态变化，再勾选确认。")
     story_outline.validate_approval(p, c, outline_checked)
     selected = validate_changes(p, c)
     changed = c.get("accepted_text") != c["text"] or c.get("accepted_changes", []) != selected or c.get("accepted_summary") != c["summary"]
@@ -230,6 +232,73 @@ def normalize_changes(items):
                        "field": bounded_string(item.get("field", ""), 100), "value": bounded_string(item.get("value", ""), 5000),
                        "evidence": bounded_string(item.get("evidence", ""), 5000), "selected": item.get("selected") is True})
     return result
+
+
+def _invalidate_chapter_order(p, index):
+    """Changed predecessors require a new, ordered author decision; keep all source material."""
+    for c in p["chapters"][index:]:
+        if c.get("review"):
+            c["review"].update(stale=True, stale_at=now(), stale_reason="章节顺序或前文章节已改变，请重新审稿。")
+        if c["status"] == "approved":
+            c["status"] = "needs_review"
+        c["outline_checked_version"] = 0
+        if c["text"].strip():
+            c["local_edit_review_required"] = True
+        c["updated_at"] = now()
+
+
+def _manage_chapters(p, action, data):
+    """Validate before editing order or the reversible trash; ids and full chapter history survive."""
+    chapters = p["chapters"]
+    if action == "restore_chapter":
+        entry = next((entry for entry in p["chapter_trash"] if entry["id"] == data.get("trash_id")), None)
+        if not entry:
+            raise StoryError("回收站中没有这份章节。")
+        restored = copy.deepcopy(entry["chapter"])
+        if any(c["id"] == restored["id"] for c in chapters):
+            raise StoryError("原章节已在目录中，不能重复恢复。")
+        index = min(entry["index"], len(chapters))
+        # Even an original approved chapter must be explicitly confirmed in its restored context.
+        restored["status"] = "needs_review" if restored["status"] == "approved" or restored.get("accepted_text") else "draft"
+        chapters.insert(index, restored)
+        p["chapter_trash"].remove(entry)
+        _invalidate_chapter_order(p, index)
+        log(p, f"已从回收站恢复《{restored['title']}》及其历史版本，请按新顺序核对章节记忆。")
+        return
+    c = get_chapter(p, data.get("id"))
+    index = chapters.index(c)
+    if action == "insert_chapter":
+        position = data.get("position")
+        if position not in ("before", "after"):
+            raise StoryError("请选择在当前章节之前或之后插入。")
+        title = bounded_string(data.get("title", "新的章节"), 200).strip()
+        if not title:
+            raise StoryError("章节标题不能为空。")
+        at = index + (position == "after")
+        chapters.insert(at, chapter(title))
+        _invalidate_chapter_order(p, at + 1)
+        log(p, f"已在《{c['title']}》{'之前' if position == 'before' else '之后'}插入《{title}》，后续章节请重新核对。")
+    elif action == "move_chapter":
+        direction = data.get("direction")
+        if direction not in ("up", "down"):
+            raise StoryError("章节移动方向无效。")
+        to = index + (-1 if direction == "up" else 1)
+        if not 0 <= to < len(chapters):
+            raise StoryError("章节已经位于目录边界，无法继续移动。")
+        chapters[index], chapters[to] = chapters[to], chapters[index]
+        _invalidate_chapter_order(p, min(index, to))
+        log(p, f"《{c['title']}》已{'上移' if direction == 'up' else '下移'}一章，请从改变顺序的位置重新核对章节记忆。")
+    elif action == "delete_chapter":
+        if len(chapters) <= 1:
+            raise StoryError("作品至少需要保留一章，不能移走最后一章。")
+        if data.get("confirm_title") != c["title"]:
+            raise StoryError("请先核对要移入回收站的章节标题。")
+        if len(p["chapter_trash"]) >= CHAPTER_TRASH_LIMIT:
+            raise StoryError("章节回收站已满（30章），请先恢复需要保留的章节，再整理目录。")
+        p["chapter_trash"].append({"id": uid(), "chapter": copy.deepcopy(c), "index": index, "deleted_at": now()})
+        chapters.pop(index)
+        _invalidate_chapter_order(p, index)
+        log(p, f"《{c['title']}》已移入章节回收站，正文和历史版本仍可恢复；后续章节请重新核对。")
 
 
 def mutate(p, action, data):
@@ -272,6 +341,8 @@ def mutate(p, action, data):
             p["entities"].append(e)
     elif action == "add_chapter":
         p["chapters"].append(chapter(bounded_string(data.get("title", f"第{len(p['chapters']) + 1}章"), 200)))
+    elif action in ("insert_chapter", "move_chapter", "delete_chapter", "restore_chapter"):
+        _manage_chapters(p, action, data)
     elif action == "save_chapter":
         c = get_chapter(p, data.get("id"))
         updates = {k: bounded_string(data.get(k, c[k]), 100000 if k == "text" else 10000) for k in ("title", "intent", "outline", "text", "summary")}

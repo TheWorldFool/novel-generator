@@ -96,6 +96,17 @@ class DraftStoreTests(unittest.TestCase):
         self.call("write", key="large:0", value={"text": "缩短"}, version=1)
         self.call("write", key="large:35", value={"text": "x" * 580000})
 
+    def test_rewrite_preview_keeps_full_prose_and_candidates_with_a_bounded_budget(self):
+        value = {"original": {"text": "原" * 100000, "summary": "摘要"},
+                 "candidate": {"text": "改" * 100000, "summary": "新摘要",
+                               "changes": [{"value": "状" * 5000, "evidence": "据" * 5000} for _ in range(100)]}}
+        self.assertGreater(len(json.dumps(value, ensure_ascii=False).encode()), drafts.MAX_VALUE_BYTES)
+        self.call("write", key="proposal:rewrite:chapter", value=value)
+        self.assertEqual(self.call(key="proposal:rewrite:chapter")["value"], value)
+        with self.assertRaises(novel.StoryError):
+            self.call("write", key="proposal:rewrite:chapter", value={"text": "x" * drafts.MAX_REWRITE_VALUE_BYTES}, version=1)
+        self.assertEqual(self.call(key="proposal:rewrite:chapter")["value"], value)
+
     def test_keys_and_expected_versions_require_explicit_valid_values(self):
         for key in ("", "../../bad", "bad key", "a" * 181, None):
             with self.subTest(key=key), self.assertRaises(novel.StoryError):

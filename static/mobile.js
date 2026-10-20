@@ -5,7 +5,7 @@ if (navigator.userAgent.includes('NovelGeneratorAndroid/')) {
   document.documentElement.classList.add('android-app');
   let saveTimer;
   let lastError = '';
-  let saveBlocked = false;
+  let failedSave = null;
 
   window.decorateMobile = function () {
     const label = $('#save-state');
@@ -23,18 +23,31 @@ if (navigator.userAgent.includes('NovelGeneratorAndroid/')) {
     saveTimer = setTimeout(() => window.mobileFlush(), 1800);
   }
 
-  window.mobileFlush = function () {
+  // Only a completed, accepted save may resume a conflicting document. The
+  // desktop save paths (including Ctrl+S and saving before navigation) call this
+  // hook too, so recovery is independent of which save button was used.
+  window.mobileSaveSucceeded = function ({projectId, revision} = {}) {
+    if(state.project?.id !== projectId || state.project.revision !== revision) return;
+    failedSave = null;
+    lastError = '';
+    if(state.dirty) scheduleSave();
+  };
+
+  window.mobileFlush = function ({retry = false} = {}) {
     window.workDrafts?.captureDialog().catch(()=>{});
     window.workDrafts?.flush().catch(()=>{});
     if(window.mobileSavePending) return window.mobileSavePending;
-    if(!state.project || !state.dirty || state.busy || saveBlocked || $('#dialog')?.open) return Promise.resolve();
+    if(!state.project || !state.dirty || state.busy || $('#dialog')?.open) return Promise.resolve();
+    if(failedSave?.projectId === state.project.id && !retry &&
+      (failedSave.conflict || failedSave.editVersion === state.editVersion)) return Promise.resolve();
     const operation = currentSaveOperation();
     if(!operation) return Promise.resolve();
     const version = state.editVersion;
     const pid = state.project.id;
+    const revision = state.project.revision;
     // Freeze this edit; newer keystrokes stay in the DOM and in the next save.
     const [action, data] = JSON.parse(JSON.stringify(operation));
-    const pending = api(`/api/projects/${pid}/mutate`, {revision:state.project.revision, action, data})
+    const pending = api(`/api/projects/${pid}/mutate`, {revision, action, data})
       .then(result => {
         if(state.project.id !== pid) return;
         if(state.editVersion === version) {
@@ -48,16 +61,18 @@ if (navigator.userAgent.includes('NovelGeneratorAndroid/')) {
             const saved = result.project.chapters.find(c => c.id === chapter.id);
             if(saved) for(const key of ['status','review','versions','outline_checked_version']) chapter[key] = saved[key];
           }
-          scheduleSave();
         }
-        lastError = '';
+        window.mobileSaveSucceeded({projectId:pid, revision:result.project.revision});
         const label = $('#save-state');
         if(label) label.textContent = state.dirty ? '有未保存修改' : '已保存到手机';
       }).catch(error => {
+        failedSave = {projectId:pid, editVersion:version, conflict:error.status === 409};
+        if(state.project?.id !== pid) return;
         if(error.message !== lastError) toast('自动保存未完成：' + error.message, true);
         lastError = error.message;
-        // Do not overwrite newer revisions or retry indefinitely after conflicts.
-        saveBlocked = true;
+        // A conflict needs an explicit successful save. Transient failures can
+        // retry once for a new edit, but never loop on the same failed input.
+        if(!failedSave.conflict && state.editVersion !== version) scheduleSave();
         const label = $('#save-state');
         if(label) label.textContent = '保存失败，请手动保存';
       }).finally(() => { window.mobileSavePending = null; });
@@ -74,8 +89,7 @@ if (navigator.userAgent.includes('NovelGeneratorAndroid/')) {
       return 'stay';
     }
     if(state.dirty) {
-      saveBlocked = false;
-      window.mobileFlush();
+      window.mobileFlush({retry:true});
       toast('正在保存草稿，保存后再按返回即可退出。');
       return 'stay';
     }
@@ -83,9 +97,6 @@ if (navigator.userAgent.includes('NovelGeneratorAndroid/')) {
   };
   document.addEventListener('input', scheduleSave);
   document.addEventListener('change', scheduleSave);
-  document.addEventListener('click', event => {
-    if(event.target.closest('[data-action="save"]')) saveBlocked = false;
-  });
   document.addEventListener('visibilitychange', () => {
     if(document.visibilityState === 'hidden') window.mobileFlush();
   });

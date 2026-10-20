@@ -157,7 +157,7 @@ def direction(value, *, active=False):
 def validate_project(p):
     obj(p)
     tree(p)
-    required = set(novel.new_project()) - {"references", "style_reference_mode", "book_outline"}
+    required = set(novel.new_project()) - {"references", "style_reference_mode", "book_outline", "chapter_trash"}
     if not required <= p.keys() or p.keys() - set(novel.new_project()):
         fail()
     identifier(p["id"])
@@ -191,8 +191,19 @@ def validate_project(p):
     chapters = items(p["chapters"])
     if not chapters:
         fail()
-    unique(chapters)
-    for chapter in chapters:
+    trash = items(p.get("chapter_trash", []), 30)
+    unique(trash)
+    for entry in trash:
+        if set(entry) != {"id", "chapter", "index", "deleted_at"}:
+            fail()
+        if type(entry["index"]) is not int or not 0 <= entry["index"] <= 20000:
+            fail()
+        if not text(entry["deleted_at"], 100).strip():
+            fail()
+        obj(entry["chapter"])
+    all_chapters = chapters + [entry["chapter"] for entry in trash]
+    unique(all_chapters)
+    for chapter in all_chapters:
         if "review" not in chapter:
             fail()
         for key in ("title", "intent", "outline", "text", "summary", "accepted_text", "accepted_summary", "updated_at"):
@@ -245,7 +256,7 @@ def validate_project(p):
         text(entry.get("at"), 100)
         text(entry.get("reason"), 10000)
         direction(entry.get("draft"))
-    for chapter in chapters:
+    for chapter in all_chapters:
         mapping(chapter)
     refs = items(p["references"], 40)
     reference_ids = unique(refs)
@@ -302,8 +313,9 @@ def prepare(data, image_decoder):
         if "reference_ids" in entity:
             entity["reference_ids"] = [reference_map[rid] for rid in entity["reference_ids"]]
     preview = {"format": FORMAT, "title": p["title"], "chapter_count": len(p["chapters"]),
+               "trashed_chapter_count": len(p["chapter_trash"]),
                "entity_count": len(p["entities"]), "image_count": len(assets),
-               "version_count": sum(len(c["versions"]) for c in p["chapters"]),
+               "version_count": sum(len(c["versions"]) for c in p["chapters"] + [entry["chapter"] for entry in p["chapter_trash"]]),
                "approved_count": sum(c["status"] == "approved" for c in p["chapters"])}
     p.update(id=novel.uid(), revision=0, is_demo=False, updated_at=novel.now())
     return p, assets, preview

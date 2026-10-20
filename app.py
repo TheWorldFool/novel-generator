@@ -369,7 +369,7 @@ class Handler(BaseHTTPRequestHandler):
             files["/local-edit.js"] = ("local-edit.js", "text/javascript; charset=utf-8")
             files["/local-edit.css"] = ("local-edit.css", "text/css; charset=utf-8")
             files["/backup.js"] = ("backup.js", "text/javascript; charset=utf-8")
-            for name in ("drafts.js", "proposals.js", "proposals.css", "memory.js", "memory.css", "revisions.js", "revisions.css"):
+            for name in ("drafts.js", "proposals.js", "proposals.css", "memory.js", "memory.css", "revisions.js", "revisions.css", "chapters.js", "chapters.css", "rewrite-notes.js"):
                 files["/" + name] = (name, "text/css; charset=utf-8" if name.endswith(".css") else "text/javascript; charset=utf-8")
             if path in files:
                 file, mime = files[path]
@@ -430,6 +430,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise novel.StoryError("操作参数格式无效。")
                 proposal_actions = {"apply_outline_proposal": proposals.adopt_outline,
                                     "apply_plan_proposal": proposals.adopt_plan,
+                                    "apply_rewrite_proposal": proposals.adopt_rewrite,
                                     "restore_outline_draft": proposals.restore_outline_draft,
                                     "apply_memory": memory.adopt}
                 action = data.get("action")
@@ -471,10 +472,10 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.settings_lock:
                     config, key = self.server.store.settings(), self.server.api_key
                 result = call_model(config, key, novel.build_context(p, c), action, instructions, c["review"])
-                if action == "plan":
-                    preview = proposals.plan_preview(p, c, result)
+                if action in ("plan", "rewrite"):
+                    preview = proposals.plan_preview(p, c, result) if action == "plan" else proposals.rewrite_preview(p, c, result)
                     if self.server.store.get(pid)["revision"] != revision:
-                        raise Conflict("生成候选期间作品已更新，原场景方案已保留。请重新生成。")
+                        raise Conflict("生成候选期间作品已更新，原稿已保留。请重新生成。")
                     return self.respond({"proposal": preview})
                 p = self.server.store.update(pid, revision, lambda p: novel.apply_ai(p, c["id"], action, result))
             elif route == "edit-preview":

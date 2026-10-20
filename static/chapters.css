@@ -1,0 +1,13 @@
+.chapter-manager-entry{font-size:12px;padding:6px 8px;margin-left:6px;white-space:nowrap}
+.chapter-management-list{list-style:none;margin:14px 0;padding:0}
+.chapter-management-row{padding:17px 0;border-bottom:1px solid var(--line,#e6e7e1)}
+.chapter-management-row strong{overflow-wrap:anywhere;margin-right:8px}
+.chapter-management-row .badge{font-size:11px;vertical-align:middle}
+.chapter-management-row .help{margin:7px 0 10px}
+.chapter-management-actions{display:flex;flex-wrap:wrap;gap:8px}
+.chapter-trash-button{color:#8c4e35}
+.chapter-trash{margin:24px 0 12px}
+.chapter-trash>summary{font-size:15px;font-weight:600;cursor:pointer;padding:8px 0}
+.chapter-delete-preview{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;line-height:1.8;max-height:210px;overflow-y:auto;padding:14px;background:#f5f4ef;border-left:3px solid #b7bfa8;margin:16px 0}
+.chapter-manager .notice{display:block;line-height:1.8;margin:16px 0}
+@media(max-width:700px){.chapter-management-actions .button{flex:1 1 42%;justify-content:center;white-space:normal;min-height:44px}.chapter-management-row .badge{display:inline-block}.chapter-manager h2{overflow-wrap:anywhere;font-size:22px}}

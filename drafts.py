@@ -8,6 +8,7 @@ import novel
 
 MAX_VALUE_BYTES = 1_200_000
 MAX_MEMORY_VALUE_BYTES = 4_000_000
+MAX_REWRITE_VALUE_BYTES = 6_000_000
 MAX_PROJECT_BYTES = 20_000_000
 MAX_ACTIVE_DRAFTS = 100
 KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_:.-]{0,179}\Z")
@@ -88,7 +89,8 @@ def handle(db, pid, data):
             size = len(encoded.encode("utf-8"))
         except (TypeError, ValueError, UnicodeError):
             raise novel.StoryError("草稿内容格式无效。") from None
-        limit = MAX_MEMORY_VALUE_BYTES if key.startswith("memory:") else MAX_VALUE_BYTES
+        limit = (MAX_REWRITE_VALUE_BYTES if key.startswith("proposal:rewrite:") else
+                 MAX_MEMORY_VALUE_BYTES if key.startswith("memory:") else MAX_VALUE_BYTES)
         if size > limit:
             raise novel.StoryError(f"这份草稿超过{limit / 1_000_000:g}MB，请先保存或缩短内容。当前输入仍保留在窗口中。")
         count, total = db.execute("SELECT COUNT(*), COALESCE(SUM(length(CAST(value AS BLOB))),0) FROM work_drafts WHERE project_id=? AND value IS NOT NULL", (pid,)).fetchone()

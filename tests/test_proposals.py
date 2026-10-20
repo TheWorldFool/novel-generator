@@ -129,6 +129,126 @@ class ProposalTests(unittest.TestCase):
             proposals.adopt_plan(self.p, preview)
         self.assertEqual(self.p, before)
 
+    def rewrite_result(self):
+        return {"text": "林照收起信，离开船厂。", "summary": "林照带信离开船厂。", "changes": [{
+            "entity_id": self.p["entities"][0]["id"], "field": "location", "value": "船厂外", "evidence": "离开船厂", "selected": True}]}
+
+    def rewrite_preview(self):
+        self.c.update(text="林照站在船厂门口。", summary="林照在船厂。")
+        return proposals.rewrite_preview(self.p, self.c, self.rewrite_result())
+
+    def test_rewrite_preview_keeps_original_and_model_selections_are_not_author_selections(self):
+        self.c.update(text="林照站在船厂门口。", summary="林照在船厂。")
+        before = copy.deepcopy(self.p)
+        preview = proposals.rewrite_preview(self.p, self.c, self.rewrite_result())
+        self.assertEqual(self.p, before)
+        self.assertEqual(preview["original"]["text"], self.c["text"])
+        self.assertFalse(preview["changes"][0]["selected"])
+        preview["original"]["changes"].append({"value": "客户端"})
+        self.assertEqual(self.p, before)
+
+    def test_rewrite_invalid_model_states_are_excluded_with_visible_warnings(self):
+        preview = self.rewrite_preview()
+        result = self.rewrite_result()
+        result["changes"] += [{**result["changes"][0], "evidence": "不存在"},
+                              {**result["changes"][0], "entity_id": "unknown"},
+                              {**result["changes"][0]}, "wrong"]
+        before = copy.deepcopy(self.p)
+        preview = proposals.rewrite_preview(self.p, self.c, result)
+        self.assertEqual(len(preview["changes"]), 1)
+        self.assertEqual(len(preview["warnings"]), 4)
+        self.assertEqual(self.p, before)
+
+    def test_adopt_rewrite_saves_exact_manual_text_and_memory_with_checkpoint_and_separate_approval(self):
+        preview = self.rewrite_preview()
+        original = copy.deepcopy(self.c)
+        preview["text"] = "林照收好信，离开船厂。"
+        preview["summary"] = "作者核对：林照离开。"
+        preview["changes"][0]["selected"] = True
+        proposals.adopt_rewrite(self.p, preview)
+        self.assertEqual(self.c["text"], preview["text"])
+        self.assertEqual(self.c["summary"], preview["summary"])
+        self.assertTrue(self.c["changes"][0]["selected"])
+        self.assertEqual(self.c["status"], "draft")
+        self.assertTrue(self.c["local_edit_review_required"])
+        for key in ("text", "summary", "changes", "outline", "intent", "cast"):
+            self.assertEqual(self.c["versions"][-1][key], original[key])
+        for key in ("accepted_text", "accepted_summary", "accepted_changes", "node_id", "completes_node"):
+            self.assertEqual(self.c.get(key), original.get(key))
+
+    def test_adopting_approved_rewrite_invalidates_later_chapters_without_changing_accepted_memory(self):
+        self.c = self.p["chapters"][0]
+        later = self.p["chapters"][1]
+        later.update(status="approved", accepted_text="原来确认的后章", review={"overview": "旧审稿"})
+        accepted = copy.deepcopy(self.c["accepted_changes"])
+        preview = proposals.rewrite_preview(self.p, self.c, self.rewrite_result())
+        proposals.adopt_rewrite(self.p, preview)
+        self.assertEqual(self.c["status"], "needs_review")
+        self.assertEqual(later["status"], "needs_review")
+        self.assertTrue(later["review"]["stale"])
+        self.assertEqual(self.c["accepted_changes"], accepted)
+        self.assertNotEqual(self.c["accepted_text"], self.c["text"])
+
+    def test_stale_rewrite_revision_or_changed_source_is_atomic(self):
+        preview = self.rewrite_preview()
+        for key, value in (("source_revision", self.p["revision"] + 1), ("source_revision", True), ("source_hash", "changed")):
+            bad = {**preview, key: value}
+            before = copy.deepcopy(self.p)
+            with self.assertRaisesRegex(novel.StoryError, "过期"):
+                proposals.adopt_rewrite(self.p, bad)
+            self.assertEqual(self.p, before)
+        self.c["summary"] = "作者在生成后修改摘要"
+        before = copy.deepcopy(self.p)
+        with self.assertRaisesRegex(novel.StoryError, "过期"):
+            proposals.adopt_rewrite(self.p, preview)
+        self.assertEqual(self.p, before)
+
+    def test_invalid_selected_rewrite_state_and_missing_memory_never_overwrite(self):
+        preview = self.rewrite_preview()
+        invalid = []
+        for key, value in (("text", " "), ("summary", " "), ("changes", None)):
+            invalid.append({**copy.deepcopy(preview), key: value})
+        missing = copy.deepcopy(preview)
+        del missing["changes"]
+        invalid.append(missing)
+        for changes in ([{**preview["changes"][0], "selected": True, "evidence": "不存在"}],
+                        [{**preview["changes"][0], "selected": True, "evidence": " 离开船厂 "}],
+                        [{**preview["changes"][0], "selected": True, "value": ""}],
+                        [{**preview["changes"][0], "entity_id": "missing"}],
+                        [preview["changes"][0], preview["changes"][0]]):
+            invalid.append({**preview, "changes": changes})
+        before = copy.deepcopy(self.p)
+        for data in invalid:
+            with self.assertRaises(novel.StoryError):
+                proposals.adopt_rewrite(self.p, data)
+            self.assertEqual(self.p, before)
+
+    def test_unselected_incomplete_valid_targets_remain_editable(self):
+        preview = self.rewrite_preview()
+        preview["changes"][0].update(value="", evidence="待补依据", selected=False)
+        proposals.adopt_rewrite(self.p, preview)
+        self.assertEqual(self.c["changes"][0]["evidence"], "待补依据")
+        self.assertFalse(self.c["changes"][0]["selected"])
+
+    def test_empty_and_malformed_rewrite_model_output_preserves_original(self):
+        self.rewrite_preview()
+        before = copy.deepcopy(self.p)
+        for result in (None, {}, {"text": "正文", "summary": ""},
+                       {"text": "正文", "summary": "摘要", "changes": "bad"}):
+            with self.assertRaises(novel.StoryError):
+                proposals.rewrite_preview(self.p, self.c, result)
+            self.assertEqual(self.p, before)
+        self.c["text"] = " "
+        with self.assertRaisesRegex(novel.StoryError, "先写入"):
+            proposals.rewrite_preview(self.p, self.c, self.rewrite_result())
+
+    def test_rewrite_noop_does_not_create_history_or_invalidation(self):
+        self.rewrite_preview()
+        preview = proposals.rewrite_preview(self.p, self.c, {"text": self.c["text"], "summary": self.c["summary"], "changes": []})
+        before = copy.deepcopy(self.p)
+        proposals.adopt_rewrite(self.p, preview)
+        self.assertEqual(self.p, before)
+
 
 if __name__ == "__main__":
     unittest.main()

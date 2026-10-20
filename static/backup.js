@@ -33,7 +33,7 @@
       ${item.loading ? '<p class="notice" role="status">正在读取并检查备份，请稍候…</p>' : ''}
       ${item.importing ? '<p class="notice" role="status">正在恢复为新作品，请稍候…</p>' : ''}
       ${item.error ? `<p class="notice amber" role="alert">${esc(item.error)}</p>` : ''}
-      ${preview ? `<div class="note-card"><strong>${esc(preview.title)}</strong><p>${total(preview.chapter_count)} 章 · ${total(preview.approved_count)} 章已确认<br>${total(preview.entity_count)} 份档案 · ${total(preview.image_count)} 张参考图片 · ${total(preview.version_count)} 条历史版本</p></div><p class="help">恢复后会新增一部作品，保留当前作品。模型连接与密钥不会随备份导入。</p>` : ''}`;
+      ${preview ? `<div class="note-card"><strong>${esc(preview.title)}</strong><p>${total(preview.chapter_count)} 章 · ${total(preview.approved_count)} 章已确认${preview.trashed_chapter_count?` · ${total(preview.trashed_chapter_count)} 章在回收站`:''}<br>${total(preview.entity_count)} 份档案 · ${total(preview.image_count)} 张参考图片 · ${total(preview.version_count)} 条历史版本</p></div><p class="help">恢复后会新增一部作品，保留当前作品。模型连接与密钥不会随备份导入。</p>` : ''}`;
     const file = $('#backup-import-file');
     if (file) file.disabled = item.importing;
     const confirm = $('#backup-import-confirm');
