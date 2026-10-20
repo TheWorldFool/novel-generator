@@ -79,7 +79,7 @@ test('emoji selection survives toolbar blur and preview does not mutate prose',a
   const h=harness();h.select(1,4);
   // Focusing a mobile toolbar can collapse the live selection.
   h.input.selectionStart=h.input.selectionEnd=0;
-  await h.click('edit-selection');
+  await h.click('local-edit-selection');
   assert.equal(h.calls.length,0);
   await h.submit('  语气自然些，保留人物动作  ');
   assert.equal(h.calls[0].url,'/api/projects/book-1/edit-preview');
@@ -92,9 +92,9 @@ test('emoji selection survives toolbar blur and preview does not mutate prose',a
 
 test('current paragraph follows blank line boundaries and no selection is explained',async()=>{
   const h=harness();h.input.selectionStart=h.input.selectionEnd=9;
-  await h.click('edit-selection');
+  await h.click('local-edit-selection');
   assert.match(h.errors[0],/长按/);
-  await h.click('edit-paragraph');
+  await h.click('local-edit-paragraph');
   await h.submit('精简');
   assert.equal(h.calls[0].body.selected_text,'后面保持。');
   assert.equal(h.calls[0].body.start,7);
@@ -102,9 +102,9 @@ test('current paragraph follows blank line boundaries and no selection is explai
 });
 
 test('manual changes are sent only on explicit adoption and original suffix stays exact',async()=>{
-  const h=harness();await h.click('edit-selection');await h.submit('微调对白');
+  const h=harness();await h.click('local-edit-selection');await h.submit('微调对白');
   h.nodes['#local-edit-replacement'].value='作者手改😀';
-  await h.click('edit-apply');
+  await h.click('local-edit-apply');
   assert.equal(h.calls.length,2);
   assert.equal(h.calls[1].body.action,'apply_local_edit');
   assert.equal(h.calls[1].body.data.replacement,'作者手改😀');
@@ -115,24 +115,24 @@ test('manual changes are sent only on explicit adoption and original suffix stay
 });
 
 test('empty replacement explicitly deletes just the selection',async()=>{
-  const h=harness();await h.click('edit-selection');await h.submit('删除这部分');
-  h.nodes['#local-edit-replacement'].value='';await h.click('edit-apply');
+  const h=harness();await h.click('local-edit-selection');await h.submit('删除这部分');
+  h.nodes['#local-edit-replacement'].value='';await h.click('local-edit-apply');
   assert.equal(h.calls[1].body.data.replacement,'');
   assert.equal(h.context.current().text,'前。\n\n后面保持。');
 });
 
 test('cancel leaves original and retained work can be resumed',async()=>{
-  const h=harness();await h.click('edit-selection');await h.submit('微调');
+  const h=harness();await h.click('local-edit-selection');await h.submit('微调');
   h.nodes['#local-edit-replacement'].value='尚未采用的手改';
-  await h.click('edit-cancel');assert.equal(h.dialog.open,false);
+  await h.click('local-edit-cancel');assert.equal(h.dialog.open,false);
   assert.equal(h.calls.length,1);
-  await h.click('edit-resume');
+  await h.click('local-edit-resume');
   assert.equal(h.nodes['#local-edit-replacement'].value,'尚未采用的手改');
   assert.equal(h.context.current().text,h.input.value);
 });
 
 test('next round uses previous manually edited candidate and same original selection',async()=>{
-  const h=harness();await h.click('edit-selection');await h.submit('更克制');
+  const h=harness();await h.click('local-edit-selection');await h.submit('更克制');
   h.nodes['#local-edit-replacement'].value='手改后的上一轮';
   await h.submit('再保留最后一个动作');
   assert.equal(h.calls[1].body.previous_replacement,'手改后的上一轮');
@@ -142,7 +142,7 @@ test('next round uses previous manually edited candidate and same original selec
 });
 
 test('feedback typed while the editor save is pending survives the result',async()=>{
-  const h=harness();await h.click('edit-selection');
+  const h=harness();await h.click('local-edit-selection');
   let complete;
   h.context.saveCurrent=()=>new Promise(resolve=>{complete=resolve;});
   const pending=h.submit('点击时的要求');
@@ -154,7 +154,7 @@ test('feedback typed while the editor save is pending survives the result',async
 });
 
 test('candidate and new feedback typed while model is pending are retained alongside new version',async()=>{
-  const h=harness();await h.click('edit-selection');await h.submit('第一轮');
+  const h=harness();await h.click('local-edit-selection');await h.submit('第一轮');
   let complete;
   h.context.request=()=>new Promise(resolve=>{complete=resolve;});
   const pending=h.submit('第二轮');
@@ -166,32 +166,32 @@ test('candidate and new feedback typed while model is pending are retained along
   assert.equal(h.nodes['#local-edit-replacement'].value,'等待期间手动润色');
   assert.equal(h.nodes['#local-edit-instructions'].value,'下一轮的意见');
   assert.match(h.dialogs.at(-1),/第二轮模型新版/);
-  await h.click('edit-use-alternative');
+  await h.click('local-edit-use-alternative');
   assert.equal(h.nodes['#local-edit-replacement'].value,'第二轮模型新版');
 });
 
 test('closing while a preview is pending never reopens the old modal',async()=>{
-  const h=harness();await h.click('edit-selection');
+  const h=harness();await h.click('local-edit-selection');
   let complete;h.context.request=()=>new Promise(resolve=>{complete=resolve;});
   const pending=h.submit('细调');while(!complete)await Promise.resolve();
   const before=h.dialogs.length;h.dialog.close();
   complete({edit:{...h.calls[0].body,source_revision:3,source_hash:'signed-source-hash',replacement:'已备好'}});
   await pending;
   assert.equal(h.dialog.open,false);assert.equal(h.dialogs.length,before);
-  await h.click('edit-resume');assert.equal(h.nodes['#local-edit-replacement'].value,'已备好');
+  await h.click('local-edit-resume');assert.equal(h.nodes['#local-edit-replacement'].value,'已备好');
 });
 
 test('a real caret move in the manuscript clears an earlier remembered selection',async()=>{
   const h=harness();h.select(1,4);
   h.input.selectionStart=h.input.selectionEnd=9;
   h.dispatch('pointerup',{target:h.input});
-  await h.click('edit-selection');
+  await h.click('local-edit-selection');
   assert.equal(h.dialog.open,false);
   assert.match(h.errors.at(-1),/请先在正文中选中文字/);
 });
 
 test('failed preview retains inputs and never changes chapter',async()=>{
-  const h=harness();await h.click('edit-selection');
+  const h=harness();await h.click('local-edit-selection');
   h.context.request=async()=>{throw new Error('服务暂时不可用');};
   await h.submit('发色改成银灰色');
   assert.deepEqual(h.errors,['服务暂时不可用']);
@@ -201,28 +201,28 @@ test('failed preview retains inputs and never changes chapter',async()=>{
 });
 
 test('stale revision or new unsaved writing blocks adoption and keeps the candidate',async()=>{
-  const h=harness();await h.click('edit-selection');await h.submit('微调');
+  const h=harness();await h.click('local-edit-selection');await h.submit('微调');
   h.context.state.project.revision++;
-  await h.click('edit-apply');
+  await h.click('local-edit-apply');
   assert.equal(h.calls.length,1);assert.match(h.errors.at(-1),/预览已过期/);
   assert.equal(h.nodes['#local-edit-replacement'].value,'更自然的文字');
   h.context.state.project.revision--;h.context.state.dirty=true;
-  await h.click('edit-apply');assert.equal(h.calls.length,1);
+  await h.click('local-edit-apply');assert.equal(h.calls.length,1);
 });
 
 test('normalizes displayed CRLF before preview so UTF16 offsets match persisted text',async()=>{
   const h=harness('第一句。\r\n\r\n第二句。');
   h.input.value='第一句。\n\n第二句。';h.input.selectionStart=6;h.input.selectionEnd=h.input.value.length;
-  await h.click('edit-selection');await h.submit('更自然');
+  await h.click('local-edit-selection');await h.submit('更自然');
   assert.equal(h.calls[0].body.revision,4);
   assert.equal(h.context.current().text,h.input.value);
   assert.equal(h.calls[0].body.selected_text,'第二句。');
 });
 
 test('inputs made while applying stay available after the clicked version is saved',async()=>{
-  const h=harness();await h.click('edit-selection');await h.submit('微调');
+  const h=harness();await h.click('local-edit-selection');await h.submit('微调');
   let complete;h.context.request=()=>new Promise(resolve=>{complete=resolve;});
-  const pending=h.click('edit-apply');while(!complete)await Promise.resolve();
+  const pending=h.click('local-edit-apply');while(!complete)await Promise.resolve();
   h.nodes['#local-edit-instructions'].value='等待采用时的新意见';
   h.nodes['#local-edit-replacement'].value='后输入的候选';
   const updated=structuredClone(h.context.state.project);updated.revision++;updated.chapters[0].text='前更自然的文字。\n\n后面保持。';
@@ -234,13 +234,13 @@ test('inputs made while applying stay available after the clicked version is sav
 });
 
 test('closing during adoption with new input does not reopen a completed dialog',async()=>{
-  const h=harness();await h.click('edit-selection');await h.submit('微调');
+  const h=harness();await h.click('local-edit-selection');await h.submit('微调');
   let complete;h.context.request=()=>new Promise(resolve=>{complete=resolve;});
-  const pending=h.click('edit-apply');while(!complete)await Promise.resolve();
+  const pending=h.click('local-edit-apply');while(!complete)await Promise.resolve();
   h.nodes['#local-edit-instructions'].value='保留的新意见';h.dialog.close();
   const before=h.dialogs.length;
   const updated=structuredClone(h.context.state.project);updated.revision++;updated.chapters[0].text='前新字。\n\n后面保持。';
   complete({project:updated,canon:[]});await pending;
   assert.equal(h.dialog.open,false);assert.equal(h.dialogs.length,before);
-  await h.click('edit-resume');assert.equal(h.nodes['#local-edit-instructions'].value,'保留的新意见');
+  await h.click('local-edit-resume');assert.equal(h.nodes['#local-edit-instructions'].value,'保留的新意见');
 });

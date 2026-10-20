@@ -6,7 +6,7 @@ plugins {
 def pythonSources = layout.buildDirectory.dir('generated/python')
 def webAssets = layout.buildDirectory.dir('generated/assets')
 tasks.register('syncPython', Sync) {
-    from('../..') { include 'app.py', 'novel.py', 'outline.py' }
+    from('../..') { include 'app.py', 'novel.py', 'outline.py', 'backups.py' }
     from('src/main/python')
     into(pythonSources)
 }
@@ -22,8 +22,8 @@ android {
         applicationId 'io.github.theworldfool.novelgenerator'
         minSdk 24
         targetSdk 35
-        versionCode 4
-        versionName '0.2.2'
+        versionCode 5
+        versionName '0.2.3'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
         ndk { abiFilters 'arm64-v8a', 'x86_64' }
     }

@@ -27,8 +27,8 @@ const current = () => state.project.chapters.find(c => c.id === state.chapterId)
 const count = text => [...(text || '').replace(/\s/g, '')].length;
 const date = value => new Date(value).toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'});
 
-async function api(path, body) {
-  const options = body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)};
+async function api(path, body, headers={}) {
+  const options = body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json',...headers}, body:JSON.stringify(body)};
   let response;
   try { response = await fetch(path, options); }
   catch { throw new Error(navigator.userAgent.includes('NovelGeneratorAndroid/') ? '暂时无法连接应用内服务。请保留未保存的文字，稍后重试。' : '无法连接本地服务，请确认 app.py 仍在运行。未保存的文字仍保留在页面中。'); }
@@ -150,6 +150,7 @@ function render() {
   decorateOutlineEntries();
   window.decorateMobile?.();
   window.decorateLocalEdit?.();
+  window.decorateBackup?.();
   if ($('#rewrite-instructions')) $('#rewrite-instructions').value = state.rewriteNotes[current().id] || '';
 }
 
@@ -185,7 +186,8 @@ function renderMemory() {
 
 function renderReview() {
   const review = current().review;
-  return `<div class="context-caption">让审稿意见落到具体文字</div><div class="button-row"><button class="button subtle small" data-action="preflight">规则预检</button><button class="button primary small" data-action="ai" data-task="review">${icon('spark')}AI 审稿</button></div>${review?`<div class="review-overview"><span class="badge ${review.source==='ai'?'approved':'draft'}">${review.source==='ai'?'AI 审稿':'本地规则预检'}</span><p>${esc(review.overview)}</p><small>${date(review.at)}</small></div>${review.issues.length?review.issues.map(i=>`<article class="issue"><div><span class="badge ${i.severity==='问题'?'needs_review':'draft'}">${esc(i.severity||'建议')}</span><strong>${esc(i.kind)}</strong></div>${i.quote?`<blockquote>${esc(i.quote)}</blockquote>${!current().text.includes(i.quote)?'<small class="warning-text">此引文未在当前正文找到，请人工核对。</small>':''}`:''}<p>${esc(i.message)}</p>${i.suggestion?`<div class="suggestion">修改建议：${esc(i.suggestion)}</div>`:''}</article>`).join(''):'<div class="empty small-empty">未发现规则覆盖范围内的问题。<small>这不代表情节与文风已经通过审核。</small></div>'}`:'<div class="empty">'+icon('pen')+'<h3>给故事一次回看</h3><p>预检格式、重复段落和状态依据；<br>使用模型检查人物动机与戏剧效果。</p></div>'}<div class="rewrite-box"><label for="rewrite-instructions" class="field-label">定向修订意见</label><textarea id="rewrite-instructions" rows="4" placeholder="例如：保留结尾，减少对话中的解释，让沈砚的回避通过动作表现。"></textarea><button class="button outline full" data-action="rewrite">${icon('spark')}按意见修订</button><p class="help">修订前自动保留版本，结果仍是待确认草稿。</p></div>`;
+  const staleNotice = review?.stale ? `<div class="notice amber" role="status"><strong>这份审稿已过期</strong><p>${esc(review.stale_reason || '正文、前文或设定已变化。')} 请重新运行预检或 AI 审稿，更新对当前章节的判断。</p></div>` : '';
+  return `${staleNotice}<div class="context-caption">让审稿意见落到具体文字</div><div class="button-row"><button class="button subtle small" data-action="preflight">规则预检</button><button class="button primary small" data-action="ai" data-task="review">${icon('spark')}AI 审稿</button></div>${review?`<div class="review-overview"><span class="badge ${review.source==='ai'?'approved':'draft'}">${review.source==='ai'?'AI 审稿':'本地规则预检'}</span><p>${esc(review.overview)}</p><small>${date(review.at)}</small></div>${review.issues.length?review.issues.map(i=>`<article class="issue"><div><span class="badge ${i.severity==='问题'?'needs_review':'draft'}">${esc(i.severity||'建议')}</span><strong>${esc(i.kind)}</strong></div>${i.quote?`<blockquote>${esc(i.quote)}</blockquote>${!current().text.includes(i.quote)?'<small class="warning-text">此引文未在当前正文找到，请人工核对。</small>':''}`:''}<p>${esc(i.message)}</p>${i.suggestion?`<div class="suggestion">修改建议：${esc(i.suggestion)}</div>`:''}</article>`).join(''):'<div class="empty small-empty">未发现规则覆盖范围内的问题。<small>这不代表情节与文风已经通过审核。</small></div>'}`:'<div class="empty">'+icon('pen')+'<h3>给故事一次回看</h3><p>预检格式、重复段落和状态依据；<br>使用模型检查人物动机与戏剧效果。</p></div>'}<div class="rewrite-box"><label for="rewrite-instructions" class="field-label">定向修订意见</label><textarea id="rewrite-instructions" rows="4" placeholder="例如：保留结尾，减少对话中的解释，让沈砚的回避通过动作表现。"></textarea><button class="button outline full" data-action="rewrite">${icon('spark')}按意见修订</button><p class="help">修订前自动保留版本，结果仍是待确认草稿。</p></div>`;
 }
 
 function renderChanges() {
@@ -194,7 +196,7 @@ function renderChanges() {
 }
 
 function renderHistory() {
-  return `<div class="context-caption">回到某个更好的句子</div><p class="help">保留最近100个版本。恢复会产生草稿，需要重新确认；现有版本仍然保留。</p>${[...current().versions].reverse().map(v=>`<div class="version"><span>${icon('clock')}</span><div><strong>${esc(v.reason)}</strong><small>${date(v.at)} · ${count(v.text)} 字</small><p>${esc(v.text.slice(0,65)||'空白草稿')}${v.text.length>65?'…':''}</p><button class="text-button" data-action="preview-version" data-id="${v.id}">查看与恢复 →</button></div></div>`).join('')||'<div class="empty small-empty">保存修改、生成正文或确认章节后，会在这里保留版本。</div>'}`;
+  return `<div class="context-caption">回到某个更好的句子</div><p class="help">相近的普通修改会合并，保留最近40个编辑版本和60个重要版本。恢复会带回摘要、场景方案和候选变化，需要复核后重新确认正文。</p>${[...current().versions].reverse().map(v=>`<div class="version"><span>${icon('clock')}</span><div><strong>${esc(v.reason)}</strong><small>${date(v.at)} · ${count(v.text)} 字</small><p>${esc(v.text.slice(0,65)||'空白草稿')}${v.text.length>65?'…':''}</p><button class="text-button" data-action="preview-version" data-id="${v.id}">查看与恢复 →</button></div></div>`).join('')||'<div class="empty small-empty">保存修改、生成正文或确认章节后，会在这里保留版本。</div>'}`;
 }
 
 function pageHeading(eyebrow, title, description, action='') {
@@ -264,7 +266,7 @@ document.addEventListener('click', event => {
   const button = event.target.closest('[data-action]');
   if (!button || state.busy) return;
   const {action, id, view, tab, task, kind} = button.dataset;
-  if (action.startsWith('ref-') || action.startsWith('out-') || action.startsWith('edit-')) return;
+  if (action.startsWith('ref-') || action.startsWith('out-') || action.startsWith('local-edit-') || action.startsWith('backup-')) return;
   if (action==='close-dialog') { $('#dialog').close(); return; }
   if (action==='editor-tab') {
     captureEditor(); state.editorTab=tab; render(); return;
@@ -280,12 +282,16 @@ document.addEventListener('click', event => {
   if (action==='remove-change') { captureEditor(); current().changes=current().changes.filter(c=>c.id!==id); markDirty(); render(); return; }
   if (action==='preview-version') {
     const v=current().versions.find(v=>v.id===id);
-    showDialog(`<div class="eyebrow green">VERSION HISTORY</div><h2>${esc(v.reason)}</h2><p class="help">${date(v.at)} · 恢复后仍需重新确认正文。</p><pre class="version-prose">${esc(v.text||'（空白草稿）')}</pre><div class="dialog-actions"><button class="button subtle" data-action="close-dialog">关闭</button><button class="button primary" data-action="restore" data-id="${v.id}">恢复为草稿</button></div>`); return;
+    showDialog(`<div class="eyebrow green">VERSION HISTORY</div><h2>${esc(v.reason)}</h2><p class="help">${date(v.at)} · 恢复后需复核章节记忆并重新确认正文。</p><div class="note-card"><strong>章节摘要</strong><p>${esc(v.summary || '（未记录摘要）')}</p><strong>场景方案</strong><p>${esc(v.outline || '（未记录场景方案）')}</p><p>${Array.isArray(v.changes) ? `包含 ${v.changes.length} 项候选状态变化；恢复后需要重新勾选。` : '此旧版本未记录候选状态变化；恢复后请重新补充并复核。'}</p></div><pre class="version-prose">${esc(v.text||'（空白草稿）')}</pre><div class="dialog-actions"><button class="button subtle" data-action="close-dialog">关闭</button><button class="button primary" data-action="restore" data-id="${v.id}">恢复为草稿</button></div>`); return;
   }
   if (action==='approve') {
-    captureEditor();
+    run(async () => {
+    await saveCurrent();
+    render();
     const c=current();
-    showDialog(`<div class="eyebrow green">AUTHOR'S APPROVAL</div><h2>把这一章写进正式记忆。</h2><p>《${esc(c.title)}》 · ${count(c.text)} 字</p><div class="note-card"><strong>章节摘要</strong><p>${esc(c.summary||'尚未填写摘要，请先在「章节记忆」中补充。')}</p></div><p>本次将写入 <strong>${c.changes.filter(x=>x.selected).length}</strong> 项勾选的状态变化。未勾选的建议不会生效。</p>${c.local_edit_review_required?'<label class="check-line"><input type="checkbox" id="approve-local-edit-checked">我已核对局部微调后的章节摘要，并重新检查需要记录的状态变化。</label>':''}<p class="help">如果前文仍有未确认章节，请先完成前文。修改已确认内容会使后续章节进入待复核。</p><div class="dialog-actions"><button class="button subtle" data-action="close-dialog">继续检查</button><button class="button primary" data-action="confirm-approve">确认入库</button></div>`); decorateOutlineApproval(); return;
+    showDialog(`<div class="eyebrow green">AUTHOR'S APPROVAL</div><h2>把这一章写进正式记忆。</h2><p>《${esc(c.title)}》 · ${count(c.text)} 字</p><div class="note-card"><strong>章节摘要</strong><p>${esc(c.summary||'尚未填写摘要，请先在「章节记忆」中补充。')}</p></div><p>本次将写入 <strong>${c.changes.filter(x=>x.selected).length}</strong> 项勾选的状态变化。未勾选的建议不会生效。</p>${c.local_edit_review_required?'<label class="check-line"><input type="checkbox" id="approve-local-edit-checked">我已核对正文修改后的章节摘要，并重新检查需要记录的状态变化。</label>':''}<p class="help">如果前文仍有未确认章节，请先完成前文。修改已确认内容会使后续章节进入待复核。</p><div class="dialog-actions"><button class="button subtle" data-action="close-dialog">继续检查</button><button class="button primary" data-action="confirm-approve">确认入库</button></div>`); decorateOutlineApproval(); return;
+    });
+    return;
   }
   const instructions = action==='rewrite' ? ($('#rewrite-instructions')?.value || '') : '';
   if (action==='rewrite' && !instructions.trim() && !current().review) { toast('请填写修订意见，或先完成一次审稿。',true); return; }
@@ -306,7 +312,7 @@ document.addEventListener('click', event => {
       const outlineChecked = $('#approve-outline-checked')?.checked === true;
       const localEditChecked = $('#approve-local-edit-checked')?.checked === true;
       if (state.project.book_outline.active && !outlineChecked) throw new Error('请先勾选已核对本章与全书大纲一致。');
-      if(current().local_edit_review_required && !localEditChecked) throw new Error('请先核对局部微调后的摘要和状态变化，并勾选确认。');
+      if(current().local_edit_review_required && !localEditChecked) throw new Error('请先核对正文修改后的摘要和状态变化，并勾选确认。');
       await saveCurrent(); await mutate('approve',{id:current().id,outline_checked:outlineChecked,local_edit_checked:localEditChecked}); $('#dialog').close(); render(); toast('正文已确认，选中的状态变化已进入正式记忆。');
     } else if (action==='preflight') {
       await saveCurrent(); await mutate('preflight',{id:current().id}); state.sideTab='review'; render();
@@ -314,7 +320,7 @@ document.addEventListener('click', event => {
       if(action==='redraft') $('#dialog').close();
       await aiAction(action==='rewrite'?'rewrite':action==='redraft'?'draft':task,instructions);
     } else if (action==='restore') {
-      $('#dialog').close(); await saveCurrent(); await mutate('restore',{id:current().id, version_id:id}); render(); toast('已恢复为待确认草稿。');
+      $('#dialog').close(); await saveCurrent(); await mutate('restore',{id:current().id, version_id:id}); render(); toast(state.project.events?.[0]?.message || '已恢复为待确认草稿。');
     } else if (action==='export' || action==='backup') {
       await saveCurrent();
       const a=document.createElement('a'); a.href=`/api/projects/${state.project.id}/${action}`; a.download=action==='export'?'novel.md':'novel-backup.json'; a.click();

@@ -64,6 +64,7 @@ if (navigator.userAgent.includes('NovelGeneratorAndroid/')) {
   };
 
   window.mobileBack = function () {
+    if(window.backupImportBusy?.()) { toast('正在恢复作品，请稍候再返回。'); return 'stay'; }
     if($('#dialog')?.open) { $('#dialog').close(); return 'stay'; }
     if(state.busy || window.mobileSavePending) { toast('正在处理，请稍候再返回。'); return 'stay'; }
     if(state.dirty) {

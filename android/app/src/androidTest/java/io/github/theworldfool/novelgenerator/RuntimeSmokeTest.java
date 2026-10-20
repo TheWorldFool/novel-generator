@@ -60,6 +60,14 @@ public class RuntimeSmokeTest {
         assertTrue(request("/api/projects/" + id + "/export", null).contains("正文在手机里保存。"));
         JSONObject backup = new JSONObject(request("/api/projects/" + id + "/backup", null));
         assertEquals("正文在手机里保存。", backup.getJSONObject("project").getJSONArray("chapters").getJSONObject(0).getString("text"));
+        assertTrue(request("/", null).contains("backup.js"));
+        assertTrue(request("/backup.js", null).contains("/api/backups/preview"));
+        JSONObject preview = new JSONObject(request("/api/backups/preview", backup)).getJSONObject("preview");
+        assertEquals(1, preview.getInt("chapter_count"));
+        JSONObject restored = new JSONObject(request("/api/backups/import", backup)).getJSONObject("project");
+        assertNotEquals(id, restored.getString("id"));
+        assertEquals("正文在手机里保存。", restored.getJSONArray("chapters").getJSONObject(0).getString("text"));
+        assertTrue(request("/api/projects/" + id + "/export", null).contains("正文在手机里保存。"));
     }
 
     @Test public void otherLocalClientsCannotReadTheBooks() throws Exception {

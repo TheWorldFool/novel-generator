@@ -168,7 +168,8 @@ class LocalEditDomainTests(unittest.TestCase):
         self.assertEqual(self.c["text"], before)
         self.assertEqual(self.c["status"], "needs_review")
         self.assertTrue(any(version["text"] == adjusted for version in self.c["versions"]))
-        self.assertEqual(self.c["changes"], [])
+        self.assertEqual(self.c["changes"], [{**item, "selected": False} for item in self.c["versions"][-2]["changes"]])
+        self.assertTrue(self.c["local_edit_review_required"])
 
     def test_unchanged_replacement_is_a_domain_noop(self):
         edit = self.preview("信封是干的。", "信封是干的。")

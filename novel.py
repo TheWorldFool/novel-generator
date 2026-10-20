@@ -25,6 +25,12 @@ FIELDS = {
     "thread": {"status": "伏笔状态", "detail": "伏笔内容", "payoff": "回收计划"},
 }
 STYLE_FIELDS = ("perspective", "rhythm", "dialogue", "description", "avoid")
+HISTORY_EDIT_LIMIT = 40
+HISTORY_CHECKPOINT_LIMIT = 60
+EDIT_SNAPSHOT_WINDOW = dt.timedelta(minutes=5)
+SNAPSHOT_FIELDS = ("text", "title", "summary", "outline", "intent", "cast", "changes", "accepted_changes",
+                   "accepted_text", "accepted_summary", "node_id", "completes_node", "node_evidence",
+                   "outline_checked_version", "local_edit_review_required")
 
 
 def upgrade(p):
@@ -110,15 +116,45 @@ def canon(p, before=None):
     return list(result.values())
 
 
-def snapshot(c, reason):
-    c["versions"].append({"id": uid(), "at": now(), "reason": reason, "text": c["text"], "title": c["title"], "summary": c["summary"], "outline": c["outline"]})
-    c["versions"] = c["versions"][-100:]
+def snapshot(c, reason, *, ordinary=False):
+    """Keep the beginning of an edit session and a separate budget for author checkpoints."""
+    at = now()
+    versions = c["versions"]
+    if ordinary and versions and _version_kind(versions[-1]) == "edit":
+        try:
+            elapsed = dt.datetime.fromisoformat(at) - dt.datetime.fromisoformat(versions[-1]["at"])
+            if dt.timedelta(0) <= elapsed < EDIT_SNAPSHOT_WINDOW:
+                return
+        except (KeyError, ValueError, TypeError):
+            pass
+    versions.append({"id": uid(), "at": at, "reason": reason, "kind": "edit" if ordinary else "checkpoint",
+                     **{key: copy.deepcopy(c[key]) for key in SNAPSHOT_FIELDS if key in c}})
+    keep = set()
+    for kind, limit in (("edit", HISTORY_EDIT_LIMIT), ("checkpoint", HISTORY_CHECKPOINT_LIMIT)):
+        keep.update([i for i, item in enumerate(versions) if _version_kind(item) == kind][-limit:])
+    # Select by category rather than a common tail, so frequent saves cannot evict checkpoints.
+    c["versions"] = [item for i, item in enumerate(versions) if i in keep]
+
+
+def _version_kind(version):
+    return version.get("kind", "edit" if version.get("reason") == "编辑前的版本" else "checkpoint")
+
+
+def _review_after_text_change(c, updated, changes):
+    c["local_edit_review_required"] = True
+    c["outline_checked_version"] = 0
+    if c.get("node_evidence") and c["node_evidence"] not in updated:
+        c["node_evidence"] = ""
+    return [{**copy.deepcopy(item), "selected": False} for item in changes
+            if item.get("evidence", "").strip() and item["evidence"] in updated]
 
 
 def invalidate(p, cid, include_self=False):
     index = next(i for i, c in enumerate(p["chapters"]) if c["id"] == cid)
     affected = []
     for c in p["chapters"][index + (0 if include_self else 1):]:
+        if c.get("review"):
+            c["review"].update(stale=True, stale_at=now(), stale_reason="前文或基础设定已改变，请重新审稿。")
         if c["status"] == "approved":
             c["status"] = "needs_review"
             affected.append(c["title"])
@@ -167,13 +203,13 @@ def approve(p, cid, outline_checked=False, local_edit_checked=False):
     if not c["summary"].strip():
         raise StoryError("请先填写章节摘要，供后续章节检索。")
     if c.get("local_edit_review_required") and not local_edit_checked:
-        raise StoryError("局部微调后，请先核对章节摘要与状态变化，再勾选确认。")
+        raise StoryError("正文修改或恢复后，请先核对章节摘要与状态变化，再勾选确认。")
     story_outline.validate_approval(p, c, outline_checked)
     selected = validate_changes(p, c)
     changed = c.get("accepted_text") != c["text"] or c.get("accepted_changes", []) != selected or c.get("accepted_summary") != c["summary"]
     affected = invalidate(p, cid) if changed else []
-    snapshot(c, "作者确认正文")
     c.update(status="approved", accepted_text=c["text"], accepted_summary=c["summary"], accepted_changes=selected, local_edit_review_required=False, updated_at=now())
+    snapshot(c, "作者确认正文")
     log(p, f"已确认《{c['title']}》，入库 {len(selected)} 项变化。" + (f"后续 {len(affected)} 章待复核。" if affected else ""))
 
 
@@ -248,16 +284,27 @@ def mutate(p, action, data):
                    "completes_node": data.get("completes_node", c["completes_node"]) is True,
                    "node_evidence": bounded_string(data.get("node_evidence", c["node_evidence"]), 5000)}
         mapping_changed = any(mapping[k] != c[k] for k in mapping)
+        text_changed = updates["text"] != c["text"]
+        plan_changed = updates["outline"] != c["outline"]
         substantive = any(updates[k] != c[k] for k in ("text", "summary")) or changes != c["changes"] or mapping_changed
-        if updates["text"] != c["text"]:
-            snapshot(c, "编辑前的版本")
+        if plan_changed and c["outline"].strip():
+            snapshot(c, "场景方案修改前的版本", ordinary=True)
+        elif text_changed:
+            snapshot(c, "编辑前的版本", ordinary=True)
+        if text_changed:
             c["review"] = None
+            c["outline_checked_version"] = 0
+            if c["text"].strip() or c.get("accepted_text"):
+                changes = _review_after_text_change(c, updates["text"], changes)
+                if mapping["node_evidence"] and mapping["node_evidence"] not in updates["text"]:
+                    mapping["node_evidence"] = ""
         if mapping_changed:
             c["review"] = None
             c["outline_checked_version"] = 0
-        if substantive and c["status"] == "approved":
+        if substantive:
             affected = invalidate(p, c["id"], True)
-            log(p, f"正文或状态变化已修改，{len(affected)} 章等待复核。")
+            if affected:
+                log(p, f"正文或状态变化已修改，{len(affected)} 章等待复核。")
         c.update(updates, **mapping, changes=changes, cast=cast, updated_at=now())
     elif action == "approve":
         approve(p, data.get("id"), data.get("outline_checked") is True, data.get("local_edit_checked") is True)
@@ -271,8 +318,36 @@ def mutate(p, action, data):
         snapshot(c, "恢复前的版本")
         invalidate(p, c["id"], True)
         c.update({key: version[key] for key in ("text", "title", "summary", "outline")})
-        c.update(status="needs_review" if c["accepted_text"] else "draft", review=None, changes=[])
-        log(p, f"《{c['title']}》已恢复为待确认草稿。")
+        for key in ("intent", "cast"):
+            if key in version:
+                c[key] = copy.deepcopy(version[key])
+        c.update(node_id=version.get("node_id", ""), completes_node=version.get("completes_node", False),
+                 node_evidence=version.get("node_evidence", ""))
+        candidates = _review_after_text_change(c, c["text"], version.get("changes", []))
+        omitted = 0
+        if version.get("accepted_text") == version["text"]:
+            existing = {(x.get("entity_id"), x.get("field")) for x in candidates}
+            ids = {item.get("id") for item in candidates}
+            for item in version.get("accepted_changes", []):
+                key = (item.get("entity_id"), item.get("field"))
+                if not item.get("evidence", "").strip() or item["evidence"] not in c["text"]:
+                    continue
+                if key not in existing and len(candidates) >= 100:
+                    omitted += 1
+                    existing.add(key)
+                elif key not in existing:
+                    restored = copy.deepcopy(item)
+                    if restored.get("id") in ids:
+                        restored["id"] = uid()
+                    candidates.append(restored)
+                    existing.add(key)
+                    ids.add(restored.get("id"))
+        c.update(status="needs_review" if c["accepted_text"] else "draft", review=None,
+                 changes=_review_after_text_change(c, c["text"], candidates), updated_at=now())
+        legacy = "旧版历史未保存状态候选和节点映射，请重新核对。" if "changes" not in version else "请核对摘要、状态候选与节点映射。"
+        if omitted:
+            legacy += f"另有{omitted}项已确认变化未恢复，已达到100项候选上限；原历史仍保留，请核查。"
+        log(p, f"《{c['title']}》已恢复为待确认草稿。{legacy}")
     elif action == "preflight":
         c = get_chapter(p, data.get("id"))
         c["review"] = preflight(p, c)
@@ -380,7 +455,8 @@ def preflight(p, c):
             break
         if earlier["status"] != "approved":
             issue("上下文", f"《{earlier['title']}》尚未确认，不能作为正式记忆。")
-    return {"source": "local", "at": now(), "overview": "规则预检只检查可确定的问题，不代表剧情、人物动机或文风已通过审稿。", "issues": issues}
+    return {"source": "local", "at": now(), "source_revision": p["revision"], "source_hash": _text_hash(c["text"]),
+            "stale": False, "overview": "规则预检只检查可确定的问题，不代表剧情、人物动机或文风已通过审稿。", "issues": issues}
 
 
 def build_context(p, c):
@@ -563,12 +639,8 @@ def apply_local_edit(p, data):
     updated = c["text"][:a] + preview["replacement"] + c["text"][b:]
     snapshot(c, "局部微调前的版本")
     invalidate(p, c["id"], True)
-    changes = [{**copy.deepcopy(item), "selected": False} for item in c["changes"]
-               if item.get("evidence", "").strip() and item["evidence"] in updated]
-    c.update(text=updated, review=None, changes=changes, local_edit_review_required=True,
-             outline_checked_version=0, updated_at=now())
-    if c["node_evidence"] and c["node_evidence"] not in updated:
-        c["node_evidence"] = ""
+    changes = _review_after_text_change(c, updated, c["changes"])
+    c.update(text=updated, review=None, changes=changes, updated_at=now())
     log(p, f"《{c['title']}》已采用局部微调，选区外文字保持原样；请核对摘要与状态变化。")
 
 
@@ -580,6 +652,8 @@ def apply_ai(p, cid, action, result):
         outline = bounded_string(result.get("outline", ""), 10000)
         if not outline.strip():
             raise StoryError("模型没有返回场景方案，原稿已保留。")
+        if c["outline"].strip() and c["outline"] != outline:
+            snapshot(c, "AI场景规划前的版本")
         c["outline"] = outline
     elif action in ("draft", "rewrite"):
         text = bounded_string(result.get("text", ""), 100000)
@@ -602,7 +676,8 @@ def apply_ai(p, cid, action, result):
             if not isinstance(issue, dict):
                 raise StoryError("审稿意见格式不正确。")
             clean.append({key: bounded_string(issue.get(key, ""), 10000) for key in ("severity", "kind", "quote", "message", "suggestion")})
-        c["review"] = {"source": "ai", "at": now(), "overview": overview, "issues": clean}
+        c["review"] = {"source": "ai", "at": now(), "source_revision": p["revision"], "source_hash": _text_hash(c["text"]),
+                       "stale": False, "overview": overview, "issues": clean}
     else:
         raise StoryError("未知模型操作。")
     c["updated_at"] = now()

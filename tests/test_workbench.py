@@ -68,7 +68,7 @@ class DomainTests(unittest.TestCase):
         self.assertEqual(hero["state"]["location"], self.hero["base"]["location"])
         with self.assertRaisesRegex(novel.StoryError, "顺序"):
             novel.approve(self.p, self.second["id"])
-        novel.approve(self.p, self.first["id"])
+        novel.approve(self.p, self.first["id"], local_edit_checked=True)
         self.assertEqual(self.second["status"], "needs_review")
         novel.approve(self.p, self.second["id"])
         self.assertEqual(self.second["status"], "approved")
@@ -85,13 +85,14 @@ class DomainTests(unittest.TestCase):
         hero2 = next(e for e in context2["entities"] if e["id"] == self.hero["id"])
         self.assertEqual(hero2["state"]["location"], "旧船厂")
 
-    def test_restore_keeps_current_version_and_clears_stale_candidates(self):
+    def test_restore_keeps_current_version_and_recovers_unselected_candidates(self):
         old = self.first["versions"][0]
         original_id = old["id"]
         novel.mutate(self.p, "save_chapter", {"id": self.first["id"], "text": "修改后的文字。"})
         novel.mutate(self.p, "restore", {"id": self.first["id"], "version_id": original_id})
         self.assertEqual(self.first["text"], old["text"])
-        self.assertEqual(self.first["changes"], [])
+        self.assertEqual(self.first["changes"], [{**item, "selected": False} for item in old["changes"]])
+        self.assertTrue(self.first["local_edit_review_required"])
         self.assertEqual(self.first["status"], "needs_review")
         self.assertTrue(any(v["text"] == "修改后的文字。" for v in self.first["versions"]))
 

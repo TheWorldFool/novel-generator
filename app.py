@@ -9,6 +9,7 @@ from pathlib import Path
 import sqlite3
 import threading
 import secrets
+import hashlib
 from http.cookies import SimpleCookie, CookieError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -17,6 +18,7 @@ from urllib.error import HTTPError, URLError
 
 import novel
 import outline as story_outline
+import backups
 
 ROOT = Path(__file__).resolve().parent
 
@@ -33,6 +35,7 @@ class Store:
             db.execute("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, data TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS reference_images (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS backup_imports (key TEXT PRIMARY KEY, digest TEXT NOT NULL, project_id TEXT NOT NULL)")
             if not db.execute("SELECT 1 FROM projects LIMIT 1").fetchone():
                 self.insert(novel.demo_project(), db)
 
@@ -108,6 +111,30 @@ class Store:
             assets = [{"id": rid, "mime": mime, "base64": base64.b64encode(blob).decode("ascii")}
                       for rid, mime, blob in db.execute("SELECT id, mime, data FROM reference_images WHERE project_id = ?", (pid,))]
         return {"format": "story-workbench-v2", "project": novel.upgrade(json.loads(row[0])), "images": assets}
+
+    def restore_backup(self, data, import_key=None):
+        if import_key is not None:
+            if not isinstance(import_key, str) or not 20 <= len(import_key) <= 100 or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in import_key):
+                raise novel.StoryError("恢复请求标记无效，请重新选择备份文件。")
+        digest = hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        p, assets, _ = backups.prepare(data, prepare_image)
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if import_key:
+                previous = db.execute("SELECT digest, project_id FROM backup_imports WHERE key = ?", (import_key,)).fetchone()
+                if previous:
+                    if previous[0] != digest:
+                        raise novel.StoryError("恢复请求对应的备份已改变，请重新选择文件。")
+                    saved = db.execute("SELECT data FROM projects WHERE id = ?", (previous[1],)).fetchone()
+                    if not saved:
+                        raise novel.StoryError("上次恢复的作品不存在，请重新选择文件。")
+                    return novel.upgrade(json.loads(saved[0]))
+            self.insert(p, db)
+            db.executemany("INSERT INTO reference_images VALUES (?, ?, ?, ?)",
+                           [(image["id"], p["id"], image["mime"], image["data"]) for image in assets])
+            if import_key:
+                db.execute("INSERT INTO backup_imports VALUES (?, ?, ?)", (import_key, digest, p["id"]))
+        return p
 
 
 SYSTEM = """你是中文小说创作编辑。作者拥有最终决定权。遵循故事目标、人物动机、限知视角与文风卡。
@@ -321,6 +348,7 @@ class Handler(BaseHTTPRequestHandler):
             files["/mobile.js"] = ("mobile.js", "text/javascript; charset=utf-8")
             files["/local-edit.js"] = ("local-edit.js", "text/javascript; charset=utf-8")
             files["/local-edit.css"] = ("local-edit.css", "text/css; charset=utf-8")
+            files["/backup.js"] = ("backup.js", "text/javascript; charset=utf-8")
             if path in files:
                 file, mime = files[path]
                 return self.respond((self.server.static_root / file).read_bytes(), content_type=mime)
@@ -334,13 +362,20 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                 raise novel.StoryError("请求必须使用 JSON 格式。")
+            path = urlsplit(self.path).path
+            limit = backups.MAX_BYTES if path in ("/api/backups/preview", "/api/backups/import") else 8_000_000
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 8_000_000:
-                raise novel.StoryError("请求大小无效，最多允许8MB。")
+            if not 0 < length <= limit:
+                raise novel.StoryError(f"请求大小无效，最多允许{limit // 1_000_000}MB。")
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
                 raise novel.StoryError("请求格式无效。")
-            path = urlsplit(self.path).path
+            if path == "/api/backups/preview":
+                _, _, preview = backups.prepare(data, prepare_image)
+                return self.respond({"preview": preview})
+            if path == "/api/backups/import":
+                p = self.server.store.restore_backup(data, self.headers.get("Idempotency-Key"))
+                return self.respond({"project": p, "canon": novel.canon(p)}, 201)
             if path == "/api/projects":
                 title = novel.bounded_string(data.get("title", "未命名小说"), 200).strip()
                 if not title:
@@ -447,7 +482,7 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({"error": str(exc)}, 409)
         except novel.StoryError as exc:
             self.respond({"error": str(exc)}, 400)
-        except (json.JSONDecodeError, ValueError, TypeError, KeyError, AttributeError):
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
             self.respond({"error": "数据格式不正确，请检查输入。原有内容已保留。"}, 400)
         except Exception:
             self.respond({"error": "本地服务遇到异常，操作未完成。请检查磁盘空间并重试。"}, 500)

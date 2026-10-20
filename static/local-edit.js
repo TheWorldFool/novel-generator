@@ -44,11 +44,11 @@
       ${stale?'<div class="notice amber">正文已变化，请关闭后重新选择要微调的文字。这里的意见和建议仍保留，尚未替换正文。</div>':''}
       <details class="local-edit-original" open><summary>选中的原文 · ${[...draft.original].length} 字符</summary><pre>${esc(draft.original)}</pre></details>
       ${generated || draft.replacement !== undefined?`<label class="field">修改建议 · 可直接编辑<textarea id="local-edit-replacement" rows="7" maxlength="30000" aria-label="修改建议">${esc(draft.replacement ?? '')}</textarea><small>采用时只替换上面的原文。清空建议会删除这段选区。</small></label>`:''}
-      ${draft.alternative!==undefined?`<section class="local-edit-alternative"><h3>等待期间新生成的一版</h3><p class="help">你继续编辑的建议已保留在上方。可先比较，再选择使用这一版。</p><pre>${esc(draft.alternative)}</pre><button type="button" class="button outline small" data-action="edit-use-alternative">将这一版放入修改建议</button></section>`:''}
+      ${draft.alternative!==undefined?`<section class="local-edit-alternative"><h3>等待期间新生成的一版</h3><p class="help">你继续编辑的建议已保留在上方。可先比较，再选择使用这一版。</p><pre>${esc(draft.alternative)}</pre><button type="button" class="button outline small" data-action="local-edit-use-alternative">将这一版放入修改建议</button></section>`:''}
       <label class="field">${generated?'继续微调什么？':'需要修改哪些细节？'}<textarea id="local-edit-instructions" rows="3" maxlength="5000" placeholder="例如：把她的语气改得克制一些，保留动作、情节和其他对白。">${esc(draft.instructions)}</textarea></label>
-      <div class="local-edit-chips" aria-label="常用微调要求">${['表达更自然，保留原意','减少解释，用动作表现','对白更符合人物性格','精简重复描写'].map(text=>`<button type="button" class="check-chip" data-action="edit-chip" data-value="${esc(text)}">${esc(text)}</button>`).join('')}</div>
+      <div class="local-edit-chips" aria-label="常用微调要求">${['表达更自然，保留原意','减少解释，用动作表现','对白更符合人物性格','精简重复描写'].map(text=>`<button type="button" class="check-chip" data-action="local-edit-chip" data-value="${esc(text)}">${esc(text)}</button>`).join('')}</div>
       <p class="help">模型会参考当前人物、文风和全书大纲。采用后请核对章节记忆与状态变化。</p>
-      <div class="dialog-actions local-edit-actions"><button type="button" class="button subtle" data-action="edit-cancel">${draft.applied?'关闭':generated?'保留原文并关闭':'取消'}</button><button type="submit" class="button ${generated?'outline':'primary'}" ${stale || draft.applied?'disabled':''}>${generated?'按意见再生成一版':'生成微调预览'}</button>${generated?`<button type="button" class="button primary" data-action="edit-apply" ${stale || draft.applied?'disabled':''}>采用建议，仅替换选区</button>`:''}</div>
+      <div class="dialog-actions local-edit-actions"><button type="button" class="button subtle" data-action="local-edit-cancel">${draft.applied?'关闭':generated?'保留原文并关闭':'取消'}</button><button type="submit" class="button ${generated?'outline':'primary'}" ${stale || draft.applied?'disabled':''}>${generated?'按意见再生成一版':'生成微调预览'}</button>${generated?`<button type="button" class="button primary" data-action="local-edit-apply" ${stale || draft.applied?'disabled':''}>采用建议，仅替换选区</button>`:''}</div>
     </form>`);
   }
 
@@ -164,8 +164,8 @@
     const bar = document.createElement('div');
     bar.id = 'local-edit-toolbar';
     bar.className = 'local-edit-toolbar';
-    bar.innerHTML = '<div class="local-edit-buttons"><button type="button" class="button outline small" data-action="edit-selection">微调选中文字</button><button type="button" class="button subtle small" data-action="edit-paragraph">微调当前段落</button><button type="button" class="text-button" id="local-edit-resume" data-action="edit-resume" hidden>继续上次微调</button></div><small id="local-edit-selection">选中文字，或把光标放在要修改的段落</small>' +
-      (current().local_edit_review_required?'<div class="local-edit-pending">正文已微调，请复核摘要并重新勾选有效状态变化。<button type="button" class="text-button" data-action="editor-tab" data-tab="summary">核对章节记忆 →</button></div>':'');
+    bar.innerHTML = '<div class="local-edit-buttons"><button type="button" class="button outline small" data-action="local-edit-selection">微调选中文字</button><button type="button" class="button subtle small" data-action="local-edit-paragraph">微调当前段落</button><button type="button" class="text-button" id="local-edit-resume" data-action="local-edit-resume" hidden>继续上次微调</button></div><small id="local-edit-selection">选中文字，或把光标放在要修改的段落</small>' +
+      (current().local_edit_review_required?'<div class="local-edit-pending">正文已修改，请复核摘要并重新勾选有效状态变化。<button type="button" class="text-button" data-action="editor-tab" data-tab="summary">核对章节记忆 →</button></div>':'');
     input.before(bar);
     updateResume();
   };
@@ -175,7 +175,7 @@
   });
   document.addEventListener('selectionchange',()=>{ if (document.activeElement === editor()) rememberSelection(true); });
   document.addEventListener('pointerdown',event=>{
-    if (event.target.closest('[data-action^="edit-"]')) rememberSelection();
+    if (event.target.closest('[data-action^="local-edit-"]')) rememberSelection();
   },true);
   document.addEventListener('input',event=>{
     if (event.target.id === 'chapter-text') remembered = null;
@@ -186,26 +186,26 @@
   });
   document.addEventListener('click',event=>{
     const button = event.target.closest('[data-action]');
-    if (!button || !button.dataset.action.startsWith('edit-')) return;
+    if (!button || !button.dataset.action.startsWith('local-edit-')) return;
     event.preventDefault();
     const action = button.dataset.action;
     if (state.busy) return;
-    if (action === 'edit-selection' || action === 'edit-paragraph') { openSelection(action === 'edit-paragraph'); return; }
+    if (action === 'local-edit-selection' || action === 'local-edit-paragraph') { openSelection(action === 'local-edit-paragraph'); return; }
     const draft = drafts.get(keyFor());
     if (!draft) return;
     captureDraft(draft);
-    if (action === 'edit-resume') { showDraft(draft); return; }
-    if (action === 'edit-cancel') { $('#dialog').close(); return; }
-    if (action === 'edit-chip') {
+    if (action === 'local-edit-resume') { showDraft(draft); return; }
+    if (action === 'local-edit-cancel') { $('#dialog').close(); return; }
+    if (action === 'local-edit-chip') {
       draft.instructions = draft.instructions.trim() ? `${draft.instructions.trim()}；${button.dataset.value}` : button.dataset.value;
       $('#local-edit-instructions').value = draft.instructions;
       $('#local-edit-instructions').focus();
-    } else if (action === 'edit-use-alternative') {
+    } else if (action === 'local-edit-use-alternative') {
       draft.replacement = draft.alternative;
       delete draft.alternative;
       draft.notice = '';
       showDraft(draft);
-    } else if (action === 'edit-apply') {
+    } else if (action === 'local-edit-apply') {
       const replacement = draft.replacement ?? '';
       run(()=>apply(draft,replacement),'正在替换选区并保存原稿版本…');
     }

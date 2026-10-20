@@ -26,7 +26,7 @@ def approve_first(p, completes=True):
     novel.mutate(p, "save_chapter", {"id": c["id"], "node_id": "investigation", "completes_node": completes,
                                     "text": "林照收到来信，随后在港务所拿到了旧案的线索。", "summary": "林照得到旧案线索。", "changes": [],
                                     "node_evidence": "在港务所拿到了旧案的线索" if completes else ""})
-    novel.approve(p, c["id"], outline_checked=True)
+    novel.approve(p, c["id"], outline_checked=True, local_edit_checked=True)
 
 
 class OutlineDomainTests(unittest.TestCase):
