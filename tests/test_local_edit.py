@@ -279,7 +279,7 @@ class LocalEditHTTPTests(unittest.TestCase):
                 self.assertEqual(self.server.store.get(self.pid), p)
         model.assert_not_called()
 
-    def test_missing_outline_unbound_node_and_unconfirmed_prior_chapter_block_preview(self):
+    def test_missing_outline_and_unbound_node_still_block_revision_preview(self):
         p = self.server.store.get(self.pid)
         with patch("app.call_model") as model:
             with self.assertRaises(HTTPError) as caught:
@@ -291,15 +291,40 @@ class LocalEditHTTPTests(unittest.TestCase):
                 self.preview(self.payload(p))
             self.assertEqual(caught.exception.code, 400)
 
-            def prior_not_ready(current):
-                current["chapters"][0].update(node_id="investigate", status="needs_review")
-                current["chapters"][1].update(text="林照站在门外。", summary="林照等待。")
-            p = self.server.store.update(self.pid, p["revision"], prior_not_ready)
-            with self.assertRaises(HTTPError) as caught:
-                self.preview(self.payload(p, "林照站在门外。", chapter_index=1))
-            self.assertEqual(caught.exception.code, 400)
         model.assert_not_called()
         self.assertEqual(self.server.store.get(self.pid), p)
+
+    def test_existing_prose_revision_can_precede_prior_reapproval_but_new_draft_and_canon_cannot(self):
+        p = self.ready()
+        def prior_not_ready(current):
+            current["chapters"][0].update(status="needs_review")
+            current["chapters"][1].update(text="林照站在门外。", summary="林照等待。")
+            future = novel.chapter("未来章节")
+            future.update(text="FUTURE-PROSE-MUST-NOT-LEAK", summary="未来秘密")
+            current["chapters"].append(future)
+        p = self.server.store.update(self.pid, p["revision"], prior_not_ready)
+        with patch("app.call_model", return_value={"replacement": "林照停在门外。"}) as model:
+            edit = self.preview(self.payload(p, "林照站在门外。", chapter_index=1))
+        self.assertEqual(self.server.store.get(self.pid), p)
+        self.assertTrue(edit["warnings"])
+        context = model.call_args.args[2]
+        self.assertEqual(context["revision_context"]["unconfirmed_previous_chapters"][0]["id"], p["chapters"][0]["id"])
+        self.assertFalse(context["previous_chapters"])
+        self.assertFalse(context["recent_prose"])
+        self.assertNotIn("FUTURE-PROSE-MUST-NOT-LEAK", json.dumps(context))
+        with patch("app.call_model") as model:
+            with self.assertRaises(HTTPError) as caught:
+                self.request(f"/api/projects/{self.pid}/ai", {"revision": p["revision"], "chapter_id": p["chapters"][1]["id"], "action": "draft"})
+            self.assertEqual(caught.exception.code, 400)
+        model.assert_not_called()
+        saved = self.apply(p, edit)
+        self.assertEqual(saved["chapters"][1]["text"], "林照停在门外。")
+        self.assertNotEqual(saved["chapters"][1]["status"], "approved")
+        with self.assertRaises(HTTPError) as caught:
+            self.request(f"/api/projects/{self.pid}/mutate", {"revision": saved["revision"], "action": "approve",
+                "data": {"id": saved["chapters"][1]["id"], "outline_checked": True, "local_edit_checked": True}})
+        self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(self.server.store.get(self.pid), saved)
 
     def test_provider_failure_or_malformed_result_preserves_everything(self):
         p = self.ready()

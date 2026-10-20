@@ -77,6 +77,17 @@ class DraftStoreTests(unittest.TestCase):
         self.call("write", key="proposal:plan:overflow", value={"text": "可保存"})
         self.assertEqual(len(drafts.list_drafts(self.db, "project-1")["drafts"]), 100)
 
+    def test_full_memory_candidates_have_a_larger_but_bounded_draft_budget(self):
+        value = {"summary": "事实摘要", "changes": [{"value": "状" * 5000, "evidence": "据" * 5000} for _ in range(100)]}
+        self.assertGreater(len(json.dumps(value, ensure_ascii=False).encode()), drafts.MAX_VALUE_BYTES)
+        saved = self.call("write", key="memory:chapter", value=value)
+        self.assertEqual(saved["value"], value)
+        with self.assertRaises(novel.StoryError):
+            self.call("write", key="dialog:oversize", value=value)
+        with self.assertRaises(novel.StoryError):
+            self.call("write", key="memory:chapter", value={"text": "x" * drafts.MAX_MEMORY_VALUE_BYTES}, version=1)
+        self.assertEqual(self.call(key="memory:chapter")["value"], value)
+
     def test_project_quota_counts_actual_utf8_and_can_replace_existing(self):
         for index in range(34):
             self.call("write", key=f"large:{index}", value={"text": "x" * 580000})

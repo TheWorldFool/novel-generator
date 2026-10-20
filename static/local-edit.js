@@ -73,6 +73,7 @@
       <div class="eyebrow green">REFINE A PASSAGE</div><h2>只微调这一段文字</h2>
       <p class="help">先预览，再采用。选区之外的正文会保持原样；可以直接修改建议，也可以继续指出细节。</p>
       ${draft.notice?`<div class="notice local-edit-notice" role="status">${esc(draft.notice)}</div>`:''}
+      ${Array.isArray(draft.edit?.warnings) && draft.edit.warnings.length?`<div class="notice amber local-edit-warnings" role="status"><strong>本次修稿的前文与阶段依赖</strong><ul>${draft.edit.warnings.map(warning=>`<li>${esc(typeof warning === 'string'?warning:warning.message)}</li>`).join('')}</ul></div>`:''}
       ${stale?'<div class="notice amber">正文已变化，请关闭后重新选择要微调的文字。这里的意见和建议仍保留，尚未替换正文。</div>':''}
       ${!stale && staleRevision?'<div class="notice amber">作品已经更新，这份建议不能直接采用。意见与手改内容已保留，请重新生成预览后再采用。</div>':''}
       <details class="local-edit-original" open><summary>选中的原文 · ${[...draft.original].length} 字符</summary><pre>${esc(draft.original)}</pre></details>

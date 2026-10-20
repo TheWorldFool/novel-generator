@@ -354,3 +354,22 @@ test('closing during the auxiliary save of late inputs does not reopen the dialo
   const before=h.dialogs.length;h.dialog.close();saves.forEach(resolve=>resolve());await pending;
   assert.equal(h.dialog.open,false);assert.equal(h.dialogs.length,before);
 });
+
+test('provisional revision warnings are escaped and survive a fresh app session',async()=>{
+  const store=new Map(),h=harness(undefined,{store});
+  h.context.request=async(_url,body)=>({edit:{chapter_id:'chapter-1',start:body.start,end:body.end,
+    original:body.selected_text,replacement:'先修订已有句子',source_hash:'hash',source_revision:3,
+    warnings:[{kind:'unconfirmed_chapter',message:'前章《<img src=x onerror=alert(1)>》尚未确认。'},
+      {kind:'provisional_edit',message:'正式记忆仍须按顺序确认。'}]}});
+  await h.click('local-edit-selection');await h.submit('先改这一句');
+  assert.match(h.dialogs.at(-1),/本次修稿的前文与阶段依赖/);
+  assert.match(h.dialogs.at(-1),/&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.doesNotMatch(h.dialogs.at(-1),/<img src=x/);
+  assert.match(h.dialogs.at(-1),/正式记忆仍须按顺序确认/);
+  await h.click('local-edit-cancel');
+  const reopened=harness(undefined,{store});await new Promise(resolve=>setImmediate(resolve));
+  await reopened.click('local-edit-resume');
+  assert.match(reopened.dialogs.at(-1),/本次修稿的前文与阶段依赖/);
+  assert.match(reopened.dialogs.at(-1),/正式记忆仍须按顺序确认/);
+  assert.equal(reopened.context.current().text,'前😀句。\n\n后面保持。');
+});

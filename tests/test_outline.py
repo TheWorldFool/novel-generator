@@ -186,5 +186,72 @@ class OutlineHTTPTests(unittest.TestCase):
         self.assertIn("不提前",request["messages"][0]["content"])
 
 
+class ExistingProseRevisionTests(unittest.TestCase):
+    def setUp(self):
+        self.p = activate(novel.upgrade(novel.demo_project()))
+        self.first, self.second = self.p["chapters"][:2]
+        self.first["node_id"] = "investigation"
+        self.second.update(node_id="reveal", text="林照推开窗，重新读起旧案的证词。")
+
+    def test_revision_can_repair_later_prose_while_generation_and_approval_stay_ordered(self):
+        before = copy.deepcopy(self.p)
+        self.assertEqual(story_outline.require_edit_ready(self.p, self.second)["id"], "reveal")
+        warnings = story_outline.edit_warnings(self.p, self.second)
+        self.assertTrue(any(w.get("chapter_id") == self.first["id"] and w["kind"] == "unconfirmed_chapter" for w in warnings))
+        self.assertTrue(any(w.get("node_id") == "investigation" and w["kind"] == "incomplete_milestone" for w in warnings))
+        self.assertIn("正式记忆", warnings[-1]["message"])
+        with self.assertRaisesRegex(novel.StoryError, "前章"):
+            story_outline.require_ready(self.p, self.second)
+        with self.assertRaisesRegex(novel.StoryError, "前章"):
+            story_outline.validate_approval(self.p, self.second, True)
+        self.assertEqual(self.p, before)
+
+    def test_empty_prose_cannot_use_revision_gate_to_start_an_out_of_order_chapter(self):
+        for empty in ("", " \n\t"):
+            self.second["text"] = empty
+            with self.assertRaisesRegex(novel.StoryError, "还没有正文"):
+                story_outline.require_edit_ready(self.p, self.second)
+            with self.assertRaisesRegex(novel.StoryError, "前章"):
+                story_outline.require_ready(self.p, self.second)
+
+    def test_existing_prose_still_needs_published_outline_and_valid_binding(self):
+        self.p["book_outline"]["active"] = None
+        with self.assertRaisesRegex(novel.StoryError, "确认故事走向"):
+            story_outline.require_edit_ready(self.p, self.second)
+        activate(self.p)
+        for missing in ("", "removed-node"):
+            self.second["node_id"] = missing
+            with self.assertRaisesRegex(novel.StoryError, "选择一个生效大纲节点"):
+                story_outline.require_edit_ready(self.p, self.second)
+
+    def test_incomplete_stage_is_provisional_for_revision_but_still_blocks_new_writing(self):
+        approve_first(self.p, completes=False)
+        self.assertEqual(story_outline.require_edit_ready(self.p, self.second)["id"], "reveal")
+        warnings = story_outline.edit_warnings(self.p, self.second)
+        self.assertFalse(any(w["kind"] == "unconfirmed_chapter" for w in warnings))
+        self.assertTrue(any(w["kind"] == "incomplete_milestone" for w in warnings))
+        with self.assertRaisesRegex(novel.StoryError, "不能跳过"):
+            story_outline.require_ready(self.p, self.second)
+
+    def test_revising_a_previously_completed_stage_warns_without_changing_completion(self):
+        approve_first(self.p)
+        self.second["node_id"] = "investigation"
+        before = copy.deepcopy(self.p)
+        self.assertEqual(story_outline.require_edit_ready(self.p, self.second)["id"], "investigation")
+        self.assertTrue(any(w["kind"] == "completed_milestone" for w in story_outline.edit_warnings(self.p, self.second)))
+        with self.assertRaisesRegex(novel.StoryError, "已完成"):
+            story_outline.require_ready(self.p, self.second)
+        self.assertEqual(self.p, before)
+
+    def test_warnings_only_name_prior_unconfirmed_chapters(self):
+        self.first["node_id"] = "investigation"
+        novel.mutate(self.p, "add_chapter", {})
+        future = self.p["chapters"][-1]
+        future["title"] = "未来章节独有标题"
+        warnings = story_outline.edit_warnings(self.p, self.first)
+        self.assertEqual([w["kind"] for w in warnings], ["provisional_edit"])
+        self.assertNotIn(future["title"], json.dumps(warnings, ensure_ascii=False))
+
+
 if __name__=="__main__":
     unittest.main()

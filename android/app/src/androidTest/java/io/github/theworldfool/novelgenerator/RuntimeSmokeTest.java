@@ -99,6 +99,28 @@ public class RuntimeSmokeTest {
         assertEquals(2, removed.getInt("version"));
     }
 
+    @Test public void chapterMemoryCanBeEditedWithoutRewritingProse() throws Exception {
+        assertTrue(request("/memory.js", null).contains("previewChapterMemory"));
+        assertTrue(request("/revisions.js", null).contains("decorateRevisions"));
+        JSONObject book = new JSONObject(request("/api/projects", new JSONObject().put("title", "章节记忆测试"))).getJSONObject("project");
+        String path = "/api/projects/" + book.getString("id");
+        String chapterId = book.getJSONArray("chapters").getJSONObject(0).getString("id");
+        JSONObject saved = new JSONObject(request(path + "/mutate", new JSONObject().put("revision", book.getInt("revision"))
+                .put("action", "save_chapter").put("data", new JSONObject().put("id", chapterId)
+                        .put("text", "他留在船厂修船。").put("summary", "旧摘要")))).getJSONObject("project");
+        JSONObject memory = new JSONObject(request(path + "/memory-preview", new JSONObject().put("revision", saved.getInt("revision"))
+                .put("chapter_id", chapterId).put("manual", true))).getJSONObject("memory");
+        assertEquals("旧摘要", memory.getString("summary"));
+        memory.put("summary", "他仍留在船厂，正在修船。");
+        JSONObject updated = new JSONObject(request(path + "/mutate", new JSONObject().put("revision", saved.getInt("revision"))
+                .put("action", "apply_memory").put("data", memory))).getJSONObject("project");
+        JSONObject chapter = updated.getJSONArray("chapters").getJSONObject(0);
+        assertEquals("他留在船厂修船。", chapter.getString("text"));
+        assertEquals("他仍留在船厂，正在修船。", chapter.getString("summary"));
+        assertNotEquals("approved", chapter.getString("status"));
+        assertTrue(chapter.getBoolean("local_edit_review_required"));
+    }
+
     @Test public void nativeActivityStartsWithTheEmbeddedRuntime() throws Exception {
         application().runtime.get(60, TimeUnit.SECONDS);
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();

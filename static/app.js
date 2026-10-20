@@ -154,6 +154,8 @@ function render() {
   window.decorateMobile?.();
   window.decorateLocalEdit?.();
   window.decorateBackup?.();
+  window.decorateMemory?.();
+  window.decorateRevisions?.();
   if ($('#rewrite-instructions')) $('#rewrite-instructions').value = state.rewriteNotes[current().id] || '';
 }
 
@@ -273,7 +275,7 @@ document.addEventListener('click', event => {
   const button = event.target.closest('[data-action]');
   if (!button || state.busy) return;
   const {action, id, view, tab, task, kind} = button.dataset;
-  if (action.startsWith('ref-') || action.startsWith('out-') || action.startsWith('local-edit-') || action.startsWith('backup-') || action.startsWith('draft-') || action.startsWith('proposal-')) return;
+  if (['ref-','out-','local-edit-','backup-','draft-','proposal-','memory-','revisions-'].some(prefix=>action.startsWith(prefix))) return;
   if (action==='close-dialog') { if(window.workDrafts) window.workDrafts.requestClose(); else $('#dialog').close(); return; }
   if (action==='editor-tab') {
     captureEditor(); state.editorTab=tab; render(); return;
@@ -357,7 +359,7 @@ document.addEventListener('change', event => {
 });
 
 document.addEventListener('submit', event => {
-  if (event.target.id.includes('reference-form') || event.target.id==='outline-node-form' || event.target.id==='local-edit-form' || event.target.id.startsWith('proposal-')) return;
+  if (event.target.id.includes('reference-form') || event.target.id==='outline-node-form' || event.target.id==='local-edit-form' || event.target.id.startsWith('proposal-') || event.target.id==='memory-form') return;
   event.preventDefault();
   if(state.busy) return;
   const form=event.target;

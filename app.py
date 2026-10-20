@@ -21,6 +21,7 @@ import outline as story_outline
 import backups
 import drafts as draft_store
 import proposals
+import memory
 
 ROOT = Path(__file__).resolve().parent
 
@@ -170,6 +171,7 @@ this_chapter_should_complete_milestone 为false时只推进当前节点的一部
 审稿时优先检查全书走向：是否偏离当前阶段目标、漏掉本章应完成的必经事件、触犯禁止事项、提前泄露未来信息或改变结局；发现问题以kind="大纲"列出原文和修改建议。不能因为写得流畅就认定与大纲一致。
 """
 TASKS = {
+    "memory": '只根据 context.chapter.text 当前正文提取章节记忆，返回 {"summary":"150至300字的事实摘要","changes":[]}。不要改写或返回正文，不续写剧情，不把场景方案、旧摘要、未来大纲或未确认前章当成已经发生的事实。摘要只记录当前正文确实发生的事件、选择与新线索；changes使用已有实体和允许字段，给出变化后的完整状态，并逐字引用当前正文作为evidence。不能改变locked档案，不能新增人物或字段，没有依据时省略；没有状态变化时返回空changes。作者提供的instructions仅调整提取重点，不允许虚构事实。',
     "edit": '仅微调 context.local_edit.selection.original 选中的正文，返回 {"replacement":"替换选区的完整文字"}。replacement 只包含选区的新文字，不输出整章、解释或前后文。严格按 author_instructions 修改细节，保留未要求改变的信息、人物动机、视角、文风与阶段走向，不新增设定或提前推进剧情；选区之外的原文将由程序原样保留，注意衔接。如果 previous_replacement 存在，它是上一次尚未采用的建议，本轮结合作者新意见继续修改这份建议，最终仍返回相对于原选区的完整替换文字。明确要求删除选区时可返回空字符串。',
     "split_outline": '将 outline_draft.text 中用户给出的全书大纲按先后顺序拆成阶段节点，返回 {"ending":"仅提取原文明确给出的结局；没有则为空字符串","nodes":[{"title":"阶段名","goal":"该阶段最终达到的状态","must":"该阶段必须发生的事件","avoid":"此阶段不能发生或不能提前揭示的内容","source_quote":"支持该节点的原文短引句，必须逐字一致"}]}。通常3至8个节点，最多30个。保持原有因果、人物命运和结局，不改写故事、不补造重大转折。用户已填写的结局和不可改动约束必须保留。每个节点能由一章或多章承接；未来节点的事件不能提前发生。仅输出候选节点，由作者确认生效。',
     "plan": '返回 {"outline":"场景方案"}。按3至6个场景规划本章。每个场景说明视角人物、目标、阻碍、选择、后果、信息揭示与伏笔。方案要服从章节意图，不直接写正文。',
@@ -367,7 +369,7 @@ class Handler(BaseHTTPRequestHandler):
             files["/local-edit.js"] = ("local-edit.js", "text/javascript; charset=utf-8")
             files["/local-edit.css"] = ("local-edit.css", "text/css; charset=utf-8")
             files["/backup.js"] = ("backup.js", "text/javascript; charset=utf-8")
-            for name in ("drafts.js", "proposals.js", "proposals.css"):
+            for name in ("drafts.js", "proposals.js", "proposals.css", "memory.js", "memory.css", "revisions.js", "revisions.css"):
                 files["/" + name] = (name, "text/css; charset=utf-8" if name.endswith(".css") else "text/javascript; charset=utf-8")
             if path in files:
                 file, mime = files[path]
@@ -428,10 +430,31 @@ class Handler(BaseHTTPRequestHandler):
                     raise novel.StoryError("操作参数格式无效。")
                 proposal_actions = {"apply_outline_proposal": proposals.adopt_outline,
                                     "apply_plan_proposal": proposals.adopt_plan,
-                                    "restore_outline_draft": proposals.restore_outline_draft}
+                                    "restore_outline_draft": proposals.restore_outline_draft,
+                                    "apply_memory": memory.adopt}
                 action = data.get("action")
                 p = self.server.store.update(pid, revision, lambda p: proposal_actions[action](p, args)
                                              if action in proposal_actions else novel.mutate(p, action, args))
+            elif route == "memory-preview":
+                p = self.server.store.get(pid)
+                if type(revision) is not int or p["revision"] != revision:
+                    raise Conflict("作品已更新，请保存当前正文后重新提取记忆。")
+                c = novel.get_chapter(p, data.get("chapter_id"))
+                if not c["text"].strip():
+                    raise novel.StoryError("请先写入正文，再更新章节记忆。")
+                if "manual" in data and type(data["manual"]) is not bool:
+                    raise novel.StoryError("章节记忆操作格式无效，请重新打开。")
+                if data.get("manual") is True:
+                    preview = memory.current_preview(p, c)
+                else:
+                    instructions = novel.bounded_string(data.get("instructions", ""), 5000)
+                    with self.server.settings_lock:
+                        config, key = self.server.store.settings(), self.server.api_key
+                    result = call_model(config, key, memory.context(p, c), "memory", instructions)
+                    preview = memory.preview(p, c, result)
+                if self.server.store.get(pid)["revision"] != revision:
+                    raise Conflict("生成记忆候选期间作品已更新。正文和原记忆已保留，请重新提取。")
+                return self.respond({"memory": preview})
             elif route == "ai":
                 p = self.server.store.get(pid)
                 if p["revision"] != revision:
@@ -459,12 +482,18 @@ class Handler(BaseHTTPRequestHandler):
                 if type(revision) is not int or p["revision"] != revision:
                     raise Conflict("作品已更新，请刷新后重新选择正文。")
                 c = novel.get_chapter(p, data.get("chapter_id"))
-                story_outline.require_ready(p, c)
+                story_outline.require_edit_ready(p, c)
                 selection = novel.edit_selection(p, c, data)
                 instructions = novel.bounded_string(data.get("instructions", ""), 5000).strip()
                 if not instructions:
                     raise novel.StoryError("请写明想微调的细节，例如只改动作、对白或一处描写。")
                 context = novel.build_context(p, c)
+                warnings = story_outline.edit_warnings(p, c)
+                context["revision_context"] = {
+                    "warnings": warnings,
+                    "unconfirmed_previous_chapters": [{"id": item["id"], "title": item["title"], "status": item["status"]}
+                        for item in p["chapters"][:p["chapters"].index(c)] if item["status"] != "approved"],
+                    "rule": "这是对已有正文的局部修稿，不推进新剧情。未确认前文不作为正式事实，不擅自补造缺失记忆；保留原意，若有依赖冲突则提出局部建议供作者复核。正式记忆仍须按章节顺序确认。"}
                 context["local_edit"] = {"selection": selection}
                 if "previous_replacement" in data:
                     context["local_edit"]["previous_replacement"] = novel.bounded_string(data["previous_replacement"], 30000)
@@ -472,6 +501,7 @@ class Handler(BaseHTTPRequestHandler):
                     config, key = self.server.store.settings(), self.server.api_key
                 result = call_model(config, key, context, "edit", instructions=instructions)
                 preview = novel.edit_preview(p, c, data, result)
+                preview["warnings"] = warnings
                 if self.server.store.get(pid)["revision"] != revision:
                     raise Conflict("生成建议期间作品已更新，原文没有改变。请重新选择正文后再试。")
                 return self.respond({"edit": preview})

@@ -22,7 +22,7 @@ python tools/build_android.py --setup
 
 首次会下载并校验 Android command-line tools 19.0、Gradle 8.13，并安装 SDK 35。SDK 工具要求接受其许可证。工具缓存位于 `%LOCALAPPDATA%\NovelGenerator\toolchain`，不会写进 Git。以后可省略 `--setup`。
 
-输出为 `dist/novel-generator-0.2.4-android.apk` 与 SHA-256 校验文件，版本号从构建产物读取。脚本先执行 `assembleRelease` 和 `lintRelease`，成功后才复制 APK。
+输出为 `dist/novel-generator-0.2.5-android.apk` 与 SHA-256 校验文件，版本号从构建产物读取。脚本先执行 `assembleRelease` 和 `lintRelease`，成功后才复制 APK。
 
 签名首次生成在 `%LOCALAPPDATA%\NovelGenerator\signing`，包括 `.jks` 和保存随机密码的 `.json`。**请私下备份整个签名目录**：后续更新必须使用同一密钥。这些文件不在仓库里；不要上传 GitHub。构建过程通过环境变量把密码交给工具，不把密码放在命令参数中。
 

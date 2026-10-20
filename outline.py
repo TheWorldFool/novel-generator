@@ -115,6 +115,48 @@ def require_ready(p, c):
     return nodes[index]
 
 
+def require_edit_ready(p, c):
+    """Let an author repair existing prose while earlier chapters await review.
+
+    This deliberately does not authorize generation of a new chapter or approval.
+    Both operations must continue to use require_ready's sequential checks.
+    """
+    if not c.get("text", "").strip():
+        raise novel.StoryError("本章还没有正文。请先按章节顺序完成前文，再起草新章。")
+    book = ensure(p)
+    if not book["active"]:
+        raise novel.StoryError("请先在「全书大纲」填写并确认故事走向，再微调已有正文。")
+    node = next((node for node in book["active"]["nodes"] if node["id"] == c["node_id"]), None)
+    if node is None:
+        raise novel.StoryError("请先在本章「场景方案」选择一个生效大纲节点；原绑定节点可能已被更换。")
+    return node
+
+
+def edit_warnings(p, c):
+    """Describe provisional dependencies without promoting drafts to facts."""
+    current_node = require_edit_ready(p, c)
+    warnings = []
+    for previous in p["chapters"]:
+        if previous["id"] == c["id"]:
+            break
+        if previous["status"] != "approved":
+            warnings.append({"kind": "unconfirmed_chapter", "chapter_id": previous["id"],
+                             "message": f"前章《{previous['title']}》尚未确认，不能视为正式记忆；本次只提供已有正文的临时修改建议。"})
+    done = completed_before(p, c)
+    nodes = ensure(p)["active"]["nodes"]
+    index = next(i for i, node in enumerate(nodes) if node["id"] == current_node["id"])
+    for node in nodes[:index]:
+        if node["id"] not in done:
+            warnings.append({"kind": "incomplete_milestone", "node_id": node["id"],
+                             "message": f"前置阶段「{node['title']}」尚未确认完成。可以先修稿，正式确认本章前仍须完成并确认前置阶段。"})
+    if current_node["id"] in done:
+        warnings.append({"kind": "completed_milestone", "node_id": current_node["id"],
+                         "message": f"前文已标记阶段「{current_node['title']}」完成。正式确认本章前，请核对本章绑定或调整前章的完成标记。"})
+    warnings.append({"kind": "provisional_edit",
+                     "message": "微调预览及采用后的正文仍是待确认内容。章节摘要与状态变化须由作者复核，并按章节顺序确认后才进入正式记忆。"})
+    return warnings
+
+
 def validate_approval(p, c, checked):
     book = ensure(p)
     # Keep legacy manual manuscripts usable; all AI chapter generation is gated unconditionally.
